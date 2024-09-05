@@ -19,13 +19,13 @@ pub fn main() !void {
 
     const filepath = args[1];
     const source_file = std.fs.cwd().openFile(filepath, .{ .mode = .read_only }) catch |err| {
-        print("Error when opening {s}: {}\n", .{filepath, err});
+        print("Error when opening {s}: {}\n", .{ filepath, err });
         std.process.exit(1);
     };
 
     const max_source_file_size = megabytes(8);
     const source = source_file.readToEndAlloc(allocator, max_source_file_size) catch |err| {
-        print("Error when reading {s}: {}\n", .{filepath, err});
+        print("Error when reading {s}: {}\n", .{ filepath, err });
         std.process.exit(1);
     };
     defer allocator.free(source);
