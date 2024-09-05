@@ -30,7 +30,7 @@ pub fn main() !void {
     };
     defer allocator.free(source);
 
-    try as88.assemble_and_run(source, allocator);
+    try as88.assembleAndRun(source, allocator);
 }
 
 fn megabytes(count: usize) usize {

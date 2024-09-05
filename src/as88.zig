@@ -28,6 +28,11 @@ const Section = enum {
     bss,
 };
 
+const Keyword = enum {
+    sect,
+    word,
+    space,
+};
 
 const Token = struct {
     kind: TokenKind,
@@ -42,10 +47,8 @@ const SourceLocation = struct {
 const TokenKind = union(enum) {
     none,
     comma,
-    sect,
-    sect_text,
-    sect_data,
-    sect_bss,
+    keyword: Keyword,
+    section: Section,
     label: []const u8,
     number: i16,
     register: Register,
@@ -58,35 +61,21 @@ const InstructionKind = enum {
 };
 
 
-const RegisterWithName = struct {
-    kind: Register,
-    name: []const u8,
-};
-
-// TODO: Generate this with comptime
-const registers = [_]RegisterWithName {
-    .{.kind = .ax, .name = "AX"},
-    .{.kind = .bx, .name = "BX"},
-    .{.kind = .cx, .name = "CX"},
-    .{.kind = .dx, .name = "DX"},
-};
+const instruction_names = EnumNamesToMembers(InstructionKind).init();
+const register_names = EnumNamesToMembers(Register).init();
+const section_names = EnumNamesToMembers(Section).init();
+const keyword_names = EnumNamesToMembers(Keyword).init();
 
 
-pub fn assemble_and_run(
+pub fn assembleAndRun(
     source: []const u8,
     allocator: std.mem.Allocator
 ) !void {
-    const eql = std.ascii.eqlIgnoreCase;
-    const endsWith = std.ascii.endsWithIgnoreCase;
-
-    const source_uppercase = try std.ascii.allocUpperString(allocator, source);
-    defer allocator.free(source_uppercase);
-    
     var tokens = std.ArrayList(Token).init(allocator);
     defer tokens.deinit();
 
     var line_number: usize = 1;
-    var line_it = std.mem.tokenizeAny(u8, source_uppercase, "\n");
+    var line_it = std.mem.tokenizeAny(u8, source, "\n");
     while (line_it.next()) |line| : (line_number += 1) {
         var token_column: usize = 1; // this doesn't quite work
         var token_it = std.mem.tokenizeAny(u8, line, " ,\t"); // don't use tokenizer here, commas are getting eaten
@@ -96,31 +85,39 @@ pub fn assemble_and_run(
                 .column = token_column,
             };
         
-            if (eql(token, ".SECT")) {
-                try tokens.append(.{.kind = .sect, .loc = location});
-            } else if (eql(token, "TEXT")) {
-                try tokens.append(.{.kind = .sect_text, .loc = location});
-            } else if (eql(token, "DATA")) {
-                try tokens.append(.{.kind = .sect_data, .loc = location});
-            } else if (eql(token, "BSS")) {
-                try tokens.append(.{.kind = .sect_bss, .loc = location});
-            } else if (eql(token, "MOV")) {
-                try tokens.append(.{.kind = .{.instruction = .mov}, .loc = location});
-            } else if (eql(token, "ADD")) {
-                try tokens.append(.{.kind = .{.instruction = .add}, .loc = location});
-            } else if ('0' <= token[0] and token[0] <= '9') {
-                // TODO: Better error reporting
-                const number = try std.fmt.parseInt(i16, token, 0);
-                try tokens.append(.{.kind = .{.number = number}, .loc = location});
-            } else if (endsWith(token, ":")) {
+            if (std.ascii.startsWithIgnoreCase(token, ".")) {
+                if (keyword_names.find(token[1..])) |keyword| {
+                    try tokens.append(.{.kind = .{.keyword = keyword }, .loc = location});
+                } else {
+                    printError(location, "no keyword '{s}' exists.\n", .{token});
+                    printNote("'{s}' was interpreted as a keyword, because it starts with '.'\n", .{token});
+                }
+            }
+            else if (instruction_names.find(token)) |instruction| {
+                try tokens.append(.{.kind = .{.instruction = instruction }, .loc = location});
+            }
+            else if (section_names.find(token)) |section| {
+                try tokens.append(.{.kind = .{.section = section }, .loc = location});
+            }
+            else if (register_names.find(token)) |register| {
+                try tokens.append(.{.kind = .{.register = register }, .loc = location});
+            }
+            else if ('0' <= token[0] and token[0] <= '9') {
+                if (std.fmt.parseInt(i16, token, 0)) |number| {
+                    try tokens.append(.{.kind = .{.number = number}, .loc = location});
+                } else |err| switch (err){
+                    error.InvalidCharacter => printError(location, "bad character in int literal '{s}'\n", .{token}),
+                    error.Overflow => printError(location, "int literal '{s}' is too big. It must be in the range [-32768 .. 32767].\n", .{token}),
+                }
+            }
+            else if (std.ascii.endsWithIgnoreCase(token, ":")) {
                 // TODO: Check that label identifier is valid
                 try tokens.append(.{.kind = .{.label = token[0 .. token.len-1]}, .loc = location});
-            }
-            
-            for (registers) |register| {
-                if (eql(token, register.name)) {
-                    try tokens.append(.{.kind = .{.register = register.kind }, .loc = location});
-                }
+            } else if (std.ascii.startsWithIgnoreCase(token, "!")) {
+                // Skip until the end of the line
+                break;
+            } else {
+                printError(location, "can't recognize token '{s}'\n", .{token});
             }
         }
     }
@@ -137,4 +134,49 @@ pub fn assemble_and_run(
             else => print("Unhandled token kind: {}\n", .{token.kind}),
         }
     }
+}
+
+fn printNote(comptime fmt: []const u8, args: anytype) void {
+    print("note: ", .{});
+    print(fmt, args);
+}
+
+fn printError(location: SourceLocation, comptime fmt: []const u8, args: anytype) void {
+    print("({}:{}): error: ", .{location.line, location.column});
+    print(fmt, args);
+}
+
+fn EnumNamesToMembers(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        names: @TypeOf(std.meta.fieldNames(T)),
+        members: []const T,
+
+        pub fn init() Self {
+            return Self {
+                .names = std.meta.fieldNames(T),
+                .members = std.enums.values(T),
+            };
+        }
+        
+        pub fn find(self: *const Self, name: []const u8) ?T {
+            for (0 .. self.names.len) |i| {
+                if (std.ascii.eqlIgnoreCase(self.names[i], name)) {
+                    return self.members[i];
+                }
+            }
+            return null;
+        }
+        
+        pub fn findWithPrefix(self: *const Self, name: []const u8) ?T {
+            for (0 .. self.names.len) |i| {
+                if (std.ascii.eqlIgnoreCase(self.names[i], name)) {
+                    return self.members[i];
+                }
+            }
+            return null;
+        }
+
+    };
 }
