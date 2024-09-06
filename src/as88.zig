@@ -78,7 +78,7 @@ const Tokenizer = struct {
     location: SourceLocation,
     position: usize,
     tokens: std.ArrayList(TokenWithLocation),
-    
+
     pub fn tokenize(source: []const u8, allocator: std.mem.Allocator) !std.ArrayList(TokenWithLocation) {
         var tokenizer = Self{
             .line = undefined,
@@ -89,7 +89,7 @@ const Tokenizer = struct {
             },
             .tokens = std.ArrayList(TokenWithLocation).init(allocator),
         };
-        
+
         var line_it = std.mem.tokenizeAny(u8, source, "\n");
         while (line_it.next()) |line| : (tokenizer.location.line += 1) {
             tokenizer.line = line;
@@ -153,31 +153,31 @@ const Tokenizer = struct {
                         _ = tokenizer.next();
                         print("Unhandled char '{c}'\n", .{c});
                     },
-                }    
+                }
             }
             try tokenizer.addToken(.newline);
         }
-        
-        
+
+
         return tokenizer.tokens;
     }
-    
+
     fn addTokenAndNext(self: *Self, token: Token) !void {
         try self.addToken(token);
         _ = self.next();
     }
-    
+
     fn addToken(self: *Self, token: Token) !void {
         try self.tokens.append(.{ .token = token, .location = self.location });
     }
-    
+
     fn isIdentifierChar(c: u8) bool {
         return switch (std.ascii.toLower(c)) {
             'a'...'z', '_', '0'...'9' => true,
             else => false,
         };
     }
-    
+
     fn isNumberChar(c: u8) bool {
         // Accept letters like 'a'..'z' in numbers for better error reporting
         return isIdentifierChar(c) or c == '-';
@@ -204,26 +204,26 @@ const Tokenizer = struct {
         }
         return self.line[start .. self.position];
     }
-        
+
     fn next(self: *Self) ?u8 {
         const current = self.peek();
         self.position = @min(self.position + 1, self.line.len);
         return current;
     }
-    
+
     fn peek(self: *const Self) ?u8 {
         if (self.position < self.line.len) {
             return self.line[self.position];
         }
         return null;
     }
-    
+
     fn reportNote(self: *Self, comptime fmt: []const u8, args: anytype) void {
         _ = self;
         print("note: ", .{});
         print(fmt, args);
     }
-    
+
     fn reportError(self: *Self, comptime fmt: []const u8, args: anytype) void {
         print("error({}:{}): ", .{ self.location.line, self.location.column });
         print(fmt, args);
