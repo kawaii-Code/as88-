@@ -4,6 +4,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    
+    const vaxis_dep = b.dependency("vaxis", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const vaxis_mod = vaxis_dep.module("vaxis");
+
 
     const lib_as88 = b.addStaticLibrary(.{
         .name = "libas88",
@@ -31,7 +38,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-
+    as88_tui.root_module.addImport("vaxis", vaxis_mod);
     b.installArtifact(as88_tui);
 
 
@@ -45,7 +52,7 @@ pub fn build(b: *std.Build) void {
     run_cli_step.dependOn(&run_cli_cmd.step);
 
 
-    const run_tui_cmd = b.addRunArtifact(as88_cli);
+    const run_tui_cmd = b.addRunArtifact(as88_tui);
     run_tui_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_tui_cmd.addArgs(args);
