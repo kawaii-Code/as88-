@@ -30,7 +30,8 @@ pub fn main() !void {
     };
     defer allocator.free(source);
 
-    try as88.assembleAndRun(source, allocator);
+    const ast = try as88.assemble(source, allocator);
+    try as88.run(ast, allocator);
 }
 
 fn megabytes(count: usize) usize {
