@@ -30,7 +30,7 @@ pub fn main() !void {
     };
     defer allocator.free(source);
 
-    const ast = try as88.assemble(source, allocator);
+    const ast = try as88.assemble(.{ .filepath = filepath, .contents = source }, allocator);
     try as88.run(ast, allocator);
 }
 

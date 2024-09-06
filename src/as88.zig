@@ -49,7 +49,6 @@ const TokenWithLocation = struct {
     location: SourceLocation,
 };
 
-// TODO: add filename
 const SourceLocation = struct {
     line: usize,
     column: usize,
@@ -76,13 +75,18 @@ const Token = union(enum) {
 const Tokenizer = struct {
     const Self = @This();
 
+    filepath: []const u8,
     line: []const u8,
     location: SourceLocation,
     position: usize,
     tokens: std.ArrayList(TokenWithLocation),
 
-    pub fn tokenize(source: []const u8, allocator: std.mem.Allocator) !std.ArrayList(TokenWithLocation) {
+    pub fn tokenize(
+        source: SourceFile,
+        allocator: std.mem.Allocator
+    ) !std.ArrayList(TokenWithLocation) {
         var tokenizer = Self{
+            .filepath = source.filepath,
             .line = undefined,
             .position = 0,
             .location = .{
@@ -92,7 +96,7 @@ const Tokenizer = struct {
             .tokens = std.ArrayList(TokenWithLocation).init(allocator),
         };
 
-        var line_it = std.mem.tokenizeAny(u8, source, "\n");
+        var line_it = std.mem.tokenizeAny(u8, source.contents, "\n");
         while (line_it.next()) |line| : (tokenizer.location.line += 1) {
             tokenizer.line = line;
             tokenizer.location.column = 1;
@@ -227,7 +231,7 @@ const Tokenizer = struct {
     }
 
     fn reportError(self: *Self, comptime fmt: []const u8, args: anytype) void {
-        print("error({}:{}): ", .{ self.location.line, self.location.column });
+        print("{s}:{}:{}: error: ", .{ self.filepath, self.location.line, self.location.column });
         print(fmt, args);
         print("\t{s}\n\t", .{self.line});
         for (0 .. self.location.column - 1) |_| {
@@ -394,7 +398,12 @@ const Parser = struct {
 };
 
 
-pub fn assemble(source: []const u8, allocator: std.mem.Allocator) !std.ArrayList(AstNode) {
+const SourceFile = struct {
+    filepath: []const u8,
+    contents: []const u8,
+};
+
+pub fn assemble(source: SourceFile, allocator: std.mem.Allocator) !std.ArrayList(AstNode) {
     const tokens = try Tokenizer.tokenize(source, allocator);
     defer tokens.deinit();
 
@@ -438,4 +447,36 @@ fn EnumNamesToMembers(comptime T: type) type {
             return null;
         }
     };
+}
+
+
+test "tokenize simple instructions" {
+    const allocator = std.testing.allocator;
+
+    const source = SourceFile{
+        .filepath = "*fake file*",
+        .contents = "MOV AX, 3; ADD BX, 4\n",
+    };
+
+    const expected_tokens = [_]Token {
+        .{ .instruction = .mov },
+        .{ .register = .ax },
+        .comma,
+        .{ .number = 3 },
+        .semicolon,
+        .{ .instruction = .add },
+        .{ .register = .bx },
+        .comma,
+        .{ .number = 4 },
+        .newline,
+    };
+
+    const actual_tokens = try Tokenizer.tokenize(source, allocator);
+    defer actual_tokens.deinit();
+    try std.testing.expectEqual(expected_tokens.len, actual_tokens.items.len);
+    for (actual_tokens.items, 0..) |token_with_location, i| {
+        const actual = token_with_location.token;
+        const expected = expected_tokens[i];
+        try std.testing.expectEqual(expected, actual);
+    }
 }
