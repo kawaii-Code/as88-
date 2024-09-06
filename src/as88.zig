@@ -11,7 +11,13 @@ const AstNode = union(enum) {
 
 const Instruction = struct {
     kind: InstructionKind,
-    args: void, // unimplemented
+    operand1: Token,
+    operand2: Token,
+};
+
+const InstructionKind = enum {
+    mov,
+    add,
 };
 
 const Register = enum {
@@ -66,10 +72,6 @@ const Token = union(enum) {
     instruction: InstructionKind,
 };
 
-const InstructionKind = enum {
-    mov,
-    add,
-};
 
 const Tokenizer = struct {
     const Self = @This();
@@ -236,6 +238,162 @@ const Tokenizer = struct {
 };
 
 
+const Parser = struct {
+    const Self = @This();
+
+    ast: std.ArrayList(AstNode),
+    labels: std.ArrayList([]const u8),
+    tokens: std.ArrayList(TokenWithLocation),
+    position: usize,
+    next_has_label: bool,
+
+    pub fn parse(
+        tokens: std.ArrayList(TokenWithLocation),
+        allocator: std.mem.Allocator
+    ) !std.ArrayList(AstNode) {
+        var parser = Self{
+            .ast = std.ArrayList(AstNode).init(allocator),
+            .labels = std.ArrayList([]const u8).init(allocator),
+            .tokens = tokens,
+            .position = 0,
+            .next_has_label = false,
+        };
+        defer parser.labels.deinit();
+
+        while (parser.peek()) |token_with_location| {
+            const token = token_with_location.token;
+
+            switch (token) {
+                // TODO: not keyword, directive
+                .keyword => |keyword| {
+                    if (keyword == .sect) {
+                        try parser.parseSection();
+                    } else {
+                        print("didn't expect directive '{}'\n", .{keyword});
+                    }
+                },
+                .instruction => |_| {
+                    try parser.parseInstruction();
+                },
+                .identifier => |_| {
+                    // TODO: Typos, such as 'MUV', would
+                    // get here and result in a confusing error.
+                    try parser.parseLabel();
+                },
+                .comment => {
+                    _ = parser.next();
+                    _ = parser.expect(.newline);
+                },
+                .newline => {
+                    _ = parser.next();
+                },
+                else => {
+                    print("didn't expect token: {}\n", .{token});
+                    _ = parser.next();
+                },
+            }
+        }
+
+        return parser.ast;
+    }
+
+    fn parseLabel(self: *Self) !void {
+        const label_identifier = self.next() orelse return;
+        _ = self.expect(.colon) orelse return;
+        try self.addLabel(label_identifier.token.identifier);
+    }
+
+    fn parseSection(self: *Self) !void {
+        _ = self.next() orelse return;
+        const section = self.expect(.section) orelse return;
+        try self.addNode(.{ .section = section.token.section });
+    }
+
+    fn parseInstruction(self: *Self) !void {
+        const instruction_kind = self.next() orelse return;
+        const operand1 = self.expectInstructionOperand() orelse return;
+        _ = self.expect(.comma) orelse return;
+        const operand2 = self.expectInstructionOperand() orelse return;
+        try self.addNode(.{ .instruction = .{
+            .kind = instruction_kind.token.instruction,
+            .operand1 = operand1.token,
+            .operand2 = operand2.token,
+        } });
+    }
+
+    fn addLabel(self: *Self, label: []const u8) !void {
+        self.next_has_label = true;
+        try self.labels.append(label);
+    }
+
+    fn addNode(self: *Self, ast_node: AstNode) !void {
+        try self.ast.append(ast_node);
+    }
+
+    fn expectInstructionOperand(self: *Self) ?TokenWithLocation {
+        return self.expectFunc(isInstructionArgument);
+    }
+
+    fn isInstructionArgument(token: Token) bool {
+        return switch (token) {
+            .instruction => |_| true,
+            .register => |_| true,
+            .number => |_| true,
+            else => false,
+        };
+    }
+
+    fn expect(self: *Self, expected_token: std.meta.Tag(Token)) ?TokenWithLocation {
+        if (self.next()) |token| {
+            if (token.token == expected_token) {
+                return token;
+            } else {
+                self.reportError("expected '{}', found '{}'\n", .{expected_token, token.token});
+                return null;
+            }
+        }
+        // TODO: Guaranteed error
+        return null;
+    }
+
+    fn expectFunc(self: *Self, predicate: *const fn (Token) bool) ?TokenWithLocation {
+        if (self.next()) |token| {
+            if (predicate(token.token)) {
+                return token;
+            } else {
+                // TODO: Report error
+                return null;
+            }
+        }
+        // TODO: Guaranteed error
+        return null;
+    }
+
+    fn next(self: *Self) ?TokenWithLocation {
+        const result = self.peek();
+        self.position = @min(self.position + 1, self.tokens.items.len);
+        return result;
+    }
+
+    fn peekN(self: *const Self, n: usize) ?TokenWithLocation {
+        if (self.position + n < self.tokens.items.len) {
+            return self.tokens.items[self.position + n];
+        }
+        return null;
+    }
+
+    fn peek(self: *const Self) ?TokenWithLocation {
+        return self.peekN(0);
+    }
+
+    fn reportError(self: *Self, comptime fmt: []const u8, args: anytype) void {
+        _ = self;
+        print("error): ", .{});
+        print(fmt, args);
+    }
+};
+
+
 pub fn assemble(source: []const u8, allocator: std.mem.Allocator) !std.ArrayList(AstNode) {
     const tokens = try Tokenizer.tokenize(source, allocator);
     defer tokens.deinit();
@@ -244,7 +402,11 @@ pub fn assemble(source: []const u8, allocator: std.mem.Allocator) !std.ArrayList
         print("({}:{}): {}\n", .{ token.location.line, token.location.column, token.token });
     }
 
-    const ast = std.ArrayList(AstNode).init(allocator);
+    const ast = try Parser.parse(tokens, allocator);
+    defer ast.deinit();
+    for (ast.items) |node| {
+        print("{}\n", .{node});
+    }
     return ast;
 }
 
