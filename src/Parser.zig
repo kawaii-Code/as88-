@@ -1,11 +1,13 @@
 const std = @import("std");
+const common = @import("common.zig");
+const intel8088 = @import("intel8088_cpu_description.zig");
 const Tokenizer = @import("Tokenizer.zig");
+
+const Token = Tokenizer.Token;
 const print = std.debug.print;
 
 
 const Self = @This();
-
-const Token = Tokenizer.Token;
 
 pub const ParseResult = struct {
     instructions: std.ArrayList(Instruction),
@@ -14,29 +16,21 @@ pub const ParseResult = struct {
 };
 
 pub const Instruction = struct {
-    kind: Tokenizer.InstructionKind,
-    operand1: Operand,
-    operand2: Operand,
+    mnemonic: intel8088.InstructionMnemonic,
+    operands: []const intel8088.Operand,
 };
 
-pub const Operand = union(enum) {
-    immediate: i16,
-    register: Tokenizer.Register,
-    memory: Label, // Label is used not really like a `label`, but more like a pointer
-};
-
-// A label can address either memory or code:
-//
+// A label can address either memory or code, e.g.
 // L1: MOV AX, BX
 // or
 // L1:  .WORD   2
 pub const Label = union(enum) {
-    instruction: u32,
-    memory_field: u32,
+    instruction: u16,
+    memory_field: u16,
 };
 
 pub const Memory = struct {
-    size:  i16,
+    size:  u16,
     value: i16, // This is incorrect. Memory can be of any size.
 };
 
@@ -54,6 +48,7 @@ const PreprocessResult = struct {
 };
 
 
+allocator: std.mem.Allocator,
 result: ParseResult,
 tokens: []Token,
 position: usize,
@@ -64,6 +59,7 @@ pub fn parse(
     allocator: std.mem.Allocator
 ) !ParseResult {
     var parser = Self{
+        .allocator = allocator,
         .result = .{
             .instructions = std.ArrayList(Instruction).init(allocator),
             .memory = undefined,
@@ -106,7 +102,7 @@ pub fn parse(
                     _ = parser.next();
                 }
             },
-            .instruction => |_| {
+            .instruction_mnemonic => |_| {
                 try parser.parseInstruction();
             },
             .identifier => |_| {
@@ -145,18 +141,18 @@ fn preprocess(
     var memory = std.ArrayList(Memory).init(allocator);
     
     var next_token_is_under_label: ?[]const u8 = null;
-    var instruction_pointer: u32 = 0;
-    var memory_pointer: u32 = 0;
+    var instruction_pointer: u16 = 0;
+    var memory_pointer: u16 = 0;
     while (self.next()) |token| : (next_token_is_under_label = if (token.is(.label)) token.label else null) {
         switch (token) {
-            .instruction => |_| {
+            .instruction_mnemonic => |_| {
                 if (next_token_is_under_label) |label_identifier| {
-                    try labels.put(label_identifier, Label{ .memory_field = @as(u32, @intCast(memory_pointer)) });
+                    try labels.put(label_identifier, Label{ .memory_field = memory_pointer });
                 }
                 instruction_pointer += 1;
             },
             .directive => |directive| {
-                if (!directive.isOneOf(&[_]Tokenizer.Directive{ .word, .space })) {
+                if (!directive.isOneOf(&[_]intel8088.asm_syntax.Directive{ .word, .space })) {
                     continue;
                 }
 
@@ -165,9 +161,12 @@ fn preprocess(
                     if (self.next()) |next_token| {
                         if (next_token.is(.number)) {
                             // TODO: Check that we are in bss section
-                            // TODO: Check that it is not negative
-                            memory_field.size = next_token.number;
-                            memory_field.value = 0;
+                            if (next_token.number >= 0) {
+                                memory_field.size = @as(u16, @intCast(next_token.number));
+                                memory_field.value = 0;
+                            } else {
+                                // TODO: Report error
+                            }
                         } else {
                             // TODO: Report error
                         }
@@ -187,9 +186,9 @@ fn preprocess(
                 try memory.append(memory_field);
 
                 if (next_token_is_under_label) |label_identifier| {
-                    try labels.put(label_identifier, Label{ .memory_field = @as(u32, @intCast(memory_pointer)) });
+                    try labels.put(label_identifier, Label{ .memory_field = memory_pointer });
                 }
-                memory_pointer += @as(u32, @intCast(memory_field.size));
+                memory_pointer += memory_field.size;
             },
             else => {
                 if (next_token_is_under_label) |_| {
@@ -205,32 +204,43 @@ fn preprocess(
     };
 }
 
+// TODO: Check the operands according to description
 fn parseInstruction(self: *Self) !void {
     const instruction_token = self.next() orelse return;
-    const operand1 = self.parseInstructionOperand() orelse return;
-    _ = self.match(.comma) orelse return;
-    const operand2 = self.parseInstructionOperand() orelse return;
+
+    const description = intel8088.isa.get(instruction_token.instruction_mnemonic);
+
+    // I could do the [8]Operand approach here as well, but it wastes
+    // too much memory. I know that I am using an arena to allocate,
+    // so this is fast anyway.
+    var operands = try self.allocator.alloc(intel8088.Operand, description.operand_count);
+    for (0 .. description.operand_count) |i| {
+        operands[i] = self.parseInstructionOperand() orelse return;
+        if (i != description.operand_count - 1) {
+            _ = self.match(.comma) orelse return;
+        }
+    }
     try self.result.instructions.append(.{
-        .kind = instruction_token.instruction,
-        .operand1 = operand1,
-        .operand2 = operand2,
+        .mnemonic = instruction_token.instruction_mnemonic,
+        .operands = operands,
     });
 }
 
-fn parseInstructionOperand(self: *Self) ?Operand {
+fn parseInstructionOperand(self: *Self) ?intel8088.Operand {
     if (self.next()) |token| {
         switch (token) {
             .number => {
-                return Operand { .immediate = token.number };
+                return .{ .immediate = token.number };
             },
             .register => {
-                return Operand { .register = token.register };
+                return .{ .register = token.register };
             },
             .left_paren => {
                 const label_token = self.match(.identifier) orelse return null;
                 _ = self.match(.right_paren) orelse return null;
                 if (self.result.labels.get(label_token.identifier)) |label| {
-                    return Operand { .memory = label };
+                    // TODO: Accept labels to code
+                    return .{ .memory = label.memory_field };
                 } else {
                     // Also could be a register or an immediate
                     unreachable;
@@ -270,15 +280,12 @@ fn peek(self: *const Self) ?Token {
 }
 
 fn peekN(self: *const Self, n: usize) ?Token {
-    if (self.position + n < self.tokens.len) {
-        return self.tokens[self.position + n];
-    }
-    return null;
+    return common.getOrNull(Token, self.tokens, self.position + n);
 }
 
 fn reportError(self: *Self, comptime fmt: []const u8, args: anytype) void {
     _ = self;
-    print("error): ", .{});
+    print("error: ", .{});
     print(fmt, args);
 }
 
@@ -304,14 +311,14 @@ test "parses text section" {
                         \\  MOV AX, BX
         };
 
-        const expected_instructions = &[_]Instruction{
-            .{ .kind = .mov, .operand1 = .{ .register = .ax }, .operand2 = .{ .register = .bx } },
+        const expected_instructions: []const Instruction = &.{
+            .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .register = .bx } } },
         };
 
         const tokens = try Tokenizer.tokenize(source, &arena);
         const compilation_result = try parse(tokens, arena.allocator());
 
-        try testing.expectEqualSlices(Instruction, expected_instructions, compilation_result.instructions.items);
+        try testing.expectEqualDeep(expected_instructions, compilation_result.instructions.items);
     }
 }
  
@@ -328,14 +335,14 @@ test "parser compound expression" {
                         \\  MOV AX, 1 + 2
         };
 
-        const expected_instructions = &[_]Instruction{
-            .{ .kind = .mov, .operand1 = .{ .register = .ax }, .operand2 = .{ .immediate = 3 } },
+        const expected_instructions: []const Instruction = &.{
+            .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .immediate = 3 } } },
         };
 
         const tokens = try Tokenizer.tokenize(source, &arena);
         const compilation_result = try parse(tokens, arena.allocator());
 
-        try testing.expectEqualSlices(Instruction, expected_instructions, compilation_result.instructions.items);
+        try testing.expectEqualDeep(expected_instructions, compilation_result.instructions.items);
     }
 }
 
@@ -373,6 +380,7 @@ test "parses data section" {
         try testing.expectEqualSlices(Memory, expected_memory, compilation_result.memory.items);
     }
 
+    // Need to change memory struct for this test to work
     //{
     //    const source = Tokenizer.ProgramSource{
     //        .filepath = null,

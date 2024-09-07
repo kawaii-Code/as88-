@@ -1,11 +1,13 @@
 const std = @import("std");
+const common = @import("common.zig");
+const intel8088 = @import("intel8088_cpu_description.zig");
 const Tokenizer = @import("Tokenizer.zig");
 const Parser = @import("Parser.zig");
 
-pub const ProgramSource = Tokenizer.ProgramSource;
-
 const print = std.debug.print;
 
+
+pub const ProgramSource = Tokenizer.ProgramSource;
 
 pub fn assemble(
     source: ProgramSource,
@@ -32,22 +34,14 @@ pub fn assemble(
     return parse_result;
 }
 
-const CPU = struct {
-    // Let's assume that the CPU has a RAM chip inserted in it :)
-    memory: []i16,
-    registers: [std.enums.values(Tokenizer.Register).len]i16,
-};
-
 pub fn run(parse_result: Parser.ParseResult, allocator: std.mem.Allocator) !void {
     print("---------------------------\n", .{});
-    var cpu = CPU {
-        .memory = try allocator.alloc(i16, 32),
-        .registers = undefined,
+    var cpu = intel8088.CPU {
+        // TODO: This should be 1 megabyte
+        .memory = try allocator.alloc(i16, 16),
+        .registers = std.EnumArray(intel8088.Register, i16).initFill(0),
     };
     defer allocator.free(cpu.memory);
-    for (0 .. cpu.registers.len) |i| {
-        cpu.registers[i] = 0;
-    }
 
     // "Load" program data into memory.
     // In the future, load program code into memory as well.
@@ -66,45 +60,13 @@ pub fn run(parse_result: Parser.ParseResult, allocator: std.mem.Allocator) !void
     }
 }
 
-fn step(cpu: *CPU, instruction: Parser.Instruction) void {
-    switch (instruction.kind) {
-        .mov => {
-            const lhs = instruction.operand1;
-            const rhs = instruction.operand2;
-            var destination: *i16 = undefined;
-            
-            switch (lhs) {
-                .register => destination = &cpu.registers[@as(u32, @intFromEnum(lhs.register))],
-                .immediate => todo(), // TODO: Report error: Can't write into immediate
-                .memory => destination = &cpu.memory[lhs.memory.memory_field],
-            }
-            
-            switch (rhs) {
-                .register => destination.* = cpu.registers[@as(u32, @intFromEnum(rhs.register))],
-                .immediate => destination.* = rhs.immediate,
-                .memory => destination.* = cpu.memory[rhs.memory.memory_field],
-            }
-        },
-        .add => {
-            const lhs = instruction.operand1;
-            const rhs = instruction.operand2;
-            var destination: *i16 = undefined;
-            
-            switch (lhs) {
-                .register => destination = &cpu.registers[@as(u32, @intFromEnum(lhs.register))],
-                .immediate => todo(), // Can't write into immediate
-                .memory => destination = &cpu.memory[lhs.memory.memory_field],
-            }
-            
-            switch (rhs) {
-                .register => destination.* += cpu.registers[@as(u32, @intFromEnum(rhs.register))],
-                .immediate => destination.* += rhs.immediate,
-                .memory => destination.* += cpu.memory[rhs.memory.memory_field],
-            }
-        },
-    }
-}
+fn step(cpu: *intel8088.CPU, instruction: Parser.Instruction) void {
+    const op1 = common.getOrNull(intel8088.Operand, instruction.operands, 0);
+    const op2 = common.getOrNull(intel8088.Operand, instruction.operands, 1);
 
-fn todo() noreturn {
-    std.debug.panic("this was not yet implemented\n", .{});
+    switch (instruction.mnemonic) {
+        .mov => cpu.store(op1.?, cpu.load(op2.?)),
+        .add => cpu.store(op1.?, cpu.load(op1.?) + cpu.load(op2.?)),
+        .sub => cpu.store(op1.?, cpu.load(op1.?) - cpu.load(op2.?)),
+    }
 }

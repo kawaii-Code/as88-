@@ -1,5 +1,7 @@
 const std = @import("std");
+const common = @import("common.zig");
 const as88 = @import("as88.zig");
+
 
 const print = std.debug.print;
 
@@ -22,7 +24,7 @@ pub fn main() !void {
         std.process.exit(1);
     };
 
-    const max_source_file_size = megabytes(8);
+    const max_source_file_size = common.megabytes(8);
     const source = source_file.readToEndAlloc(allocator, max_source_file_size) catch |err| {
         print("Error when reading {s}: {}\n", .{ filepath, err });
         std.process.exit(1);
@@ -33,10 +35,6 @@ pub fn main() !void {
     defer arena.deinit();
     const assembled_code = try as88.assemble(.{ .filepath = filepath, .contents = source }, &arena);
     try as88.run(assembled_code, allocator);
-}
-
-fn megabytes(count: usize) usize {
-    return count * 1024 * 1024;
 }
 
 

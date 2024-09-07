@@ -1,4 +1,6 @@
 const std = @import("std");
+const common = @import("common.zig");
+const intel8088 = @import("intel8088_cpu_description.zig");
 
 const print = std.debug.print;
 
@@ -34,58 +36,14 @@ pub const Token = union(enum) {
     string: []const u8,
     identifier: []const u8,
     number: i16,
-    directive: Directive,
-    register: Register,
-    instruction: InstructionKind,
+    directive: intel8088.asm_syntax.Directive,
+    register: intel8088.Register,
+    instruction_mnemonic: intel8088.InstructionMnemonic,
 
     pub fn is(self: @This(), tag: Tag) bool {
         return self == tag;
     }
 };
-
-pub const InstructionKind = enum {
-    mov,
-    add,
-};
-
-pub const Register = enum {
-    ax,
-    bx,
-    cx,
-    dx,
-};
-
-pub const Directive = enum {
-    sect,
-    word,
-    space,
-    text,
-    data,
-    bss,
-
-    pub fn isOneOf(self: @This(), expected: []const @This()) bool {
-        return std.mem.indexOfScalar(@This(), expected, self) != null;
-    }
-
-    pub fn isSectionType(self: @This()) bool {
-        return switch (self) {
-            .text, .data, .bss => true,
-            else => false,
-        };
-    }
-
-    pub fn isMemory(self: @This()) bool {
-        return switch (self) {
-            .word, .space => true,
-            else => false,
-        };
-    }
-};
-
-
-const instruction_names = EnumNamesToMembers(InstructionKind).init();
-const register_names = EnumNamesToMembers(Register).init();
-const directive_names = EnumNamesToMembers(Directive).init();
 
 
 filepath: ?[]const u8,
@@ -142,10 +100,10 @@ pub fn tokenize(
                 },
                 'a'...'z', 'A'...'Z', '_' => {
                     const identifier = tokenizer.skipWhile(isIdentifierChar);
-                    if (register_names.find(identifier)) |register| {
+                    if (intel8088.Register.Names.find(identifier)) |register| {
                         try tokenizer.addToken(.{ .register = register });
-                    } else if (instruction_names.find(identifier)) |instruction| {
-                        try tokenizer.addToken(.{ .instruction = instruction });
+                    } else if (intel8088.InstructionMnemonic.Names.find(identifier)) |instruction_mnemonic| {
+                        try tokenizer.addToken(.{ .instruction_mnemonic = instruction_mnemonic });
                     } else {
                         const token = init: {
                             if (tokenizer.peek()) |char_after_identifier| {
@@ -169,7 +127,7 @@ pub fn tokenize(
                     if (tokenizer.peek()) |first_directive_char| {
                         if (isIdentifierChar(first_directive_char)) {
                             const directive_identifier = tokenizer.skipWhile(isIdentifierChar);
-                            if (directive_names.find(directive_identifier)) |directive| {
+                            if (intel8088.asm_syntax.Directive.Names.find(directive_identifier)) |directive| {
                                 try tokenizer.addToken(.{ .directive = directive });
                             } else {
                                 tokenizer.reportError("no directive '{s}' exists\n", .{directive_identifier});
@@ -273,10 +231,7 @@ fn next(self: *Self) ?u8 {
 }
 
 fn peek(self: *const Self) ?u8 {
-    if (self.position < self.line.len) {
-        return self.line[self.position];
-    }
-    return null;
+    return common.getOrNull(u8, self.line, self.position);
 }
 
 fn reportNote(self: *Self, comptime fmt: []const u8, args: anytype) void {
@@ -295,29 +250,6 @@ fn reportError(self: *Self, comptime fmt: []const u8, args: anytype) void {
     print("^\n", .{});
 }
 
-
-fn EnumNamesToMembers(comptime T: type) type {
-    return struct {
-        names: @TypeOf(std.meta.fieldNames(T)),
-        members: []const T,
-
-        pub fn init() @This() {
-            return @This(){
-                .names = std.meta.fieldNames(T),
-                .members = std.enums.values(T),
-            };
-        }
-
-        pub fn find(self: *const @This(), name: []const u8) ?T {
-            for (0..self.names.len) |i| {
-                if (std.ascii.eqlIgnoreCase(self.names[i], name)) {
-                    return self.members[i];
-                }
-            }
-            return null;
-        }
-    };
-}
 
 
 const testing = std.testing;
@@ -432,13 +364,13 @@ test "tokenize simple source file" {
         .{ .directive = .text },
         .newline,
         
-        .{ .instruction = .mov },
+        .{ .instruction_mnemonic = .mov },
         .{ .register = .ax },
         .comma,
         .{ .number = 3 },
         .newline,
         
-        .{ .instruction = .add },
+        .{ .instruction_mnemonic = .add },
         .{ .register = .bx },
         .comma,
         .{ .number = 4 },

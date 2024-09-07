@@ -2,7 +2,8 @@
 
 .SECT .TEXT .HELLO
 L1:   MOV ax, -32768 ! inline comment
-    ADD ax, 3
+    ADD ax, 10
+    SUB ax, 3
 
 .
 
