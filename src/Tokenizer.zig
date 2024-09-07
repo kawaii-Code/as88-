@@ -66,6 +66,20 @@ pub const Directive = enum {
     pub fn isOneOf(self: @This(), expected: []const @This()) bool {
         return std.mem.indexOfScalar(@This(), expected, self) != null;
     }
+
+    pub fn isSectionType(self: @This()) bool {
+        return switch (self) {
+            .text, .data, .bss => true,
+            else => false,
+        };
+    }
+
+    pub fn isMemory(self: @This()) bool {
+        return switch (self) {
+            .word, .space => true,
+            else => false,
+        };
+    }
 };
 
 

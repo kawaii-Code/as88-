@@ -31,10 +31,17 @@ pub fn main() !void {
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    const ast = try as88.assemble(.{ .filepath = filepath, .contents = source }, &arena);
-    try as88.run(ast, allocator);
+    const assembled_code = try as88.assemble(.{ .filepath = filepath, .contents = source }, &arena);
+    try as88.run(assembled_code, allocator);
 }
 
 fn megabytes(count: usize) usize {
     return count * 1024 * 1024;
+}
+
+
+test {
+    _ = @import("Tokenizer.zig");
+    _ = @import("Parser.zig");
+    _ = @import("as88.zig");
 }

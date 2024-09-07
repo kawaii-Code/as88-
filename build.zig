@@ -54,7 +54,7 @@ pub fn build(b: *std.Build) void {
     run_tui_step.dependOn(&run_tui_cmd.step);
 
     const lib_as88_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/Tokenizer.zig"),
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
