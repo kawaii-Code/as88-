@@ -4,7 +4,6 @@ const as88 = @import("as88.zig");
 const print = std.debug.print;
 
 pub fn main() !void {
-    // TODO: Use an arena. Compiler memory management is simple :)
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -30,8 +29,9 @@ pub fn main() !void {
     };
     defer allocator.free(source);
 
-    const ast = try as88.assemble(.{ .filepath = filepath, .contents = source }, allocator);
-    defer ast.deinit();
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const ast = try as88.assemble(.{ .filepath = filepath, .contents = source }, &arena);
     try as88.run(ast, allocator);
 }
 
