@@ -5,14 +5,18 @@ const print = std.debug.print;
 // In assembly, ast is flat
 const AstNode = union(enum) {
     instruction: Instruction,
-    register_name: Register,
-    section: Section,
 };
 
 const Instruction = struct {
     kind: InstructionKind,
-    operand1: Token,
-    operand2: Token,
+    operand1: Operand,
+    operand2: Operand,
+};
+
+const Operand = union(enum) {
+    immediate: i16,
+    register: Register,
+    memory: []const u8,
 };
 
 const InstructionKind = enum {
@@ -27,22 +31,18 @@ const Register = enum {
     dx,
 };
 
-const Section = enum {
+const Directive = enum {
+    sect,
+    word,
+    space,
     text,
     data,
     bss,
 };
 
-const Keyword = enum {
-    sect,
-    word,
-    space,
-};
-
 const instruction_names = EnumNamesToMembers(InstructionKind).init();
 const register_names = EnumNamesToMembers(Register).init();
-const section_names = EnumNamesToMembers(Section).init();
-const keyword_names = EnumNamesToMembers(Keyword).init();
+const directive_names = EnumNamesToMembers(Directive).init();
 
 const TokenWithLocation = struct {
     token: Token,
@@ -64,9 +64,8 @@ const Token = union(enum) {
     semicolon,
     comment,
     identifier: []const u8,
-    keyword: Keyword,
-    section: Section,
     number: i16,
+    directive: Directive,
     register: Register,
     instruction: InstructionKind,
 };
@@ -128,8 +127,6 @@ const Tokenizer = struct {
                         const word = tokenizer.skipWhile(isIdentifierChar);
                         if (register_names.find(word)) |register| {
                             try tokenizer.addToken(.{ .register = register });
-                        } else if (section_names.find(word)) |section| {
-                            try tokenizer.addToken(.{ .section = section });
                         } else if (instruction_names.find(word)) |instruction| {
                             try tokenizer.addToken(.{ .instruction = instruction });
                         } else {
@@ -138,20 +135,20 @@ const Tokenizer = struct {
                     },
                     '.' => {
                         _ = tokenizer.next();
-                        if (tokenizer.peek()) |first_keyword_char| {
-                            if (isIdentifierChar(first_keyword_char)) {
-                                const keyword_text = tokenizer.skipWhile(isIdentifierChar);
-                                if (keyword_names.find(keyword_text)) |keyword| {
-                                    try tokenizer.addToken(.{ .keyword = keyword });
+                        if (tokenizer.peek()) |first_directive_char| {
+                            if (isIdentifierChar(first_directive_char)) {
+                                const directive_text = tokenizer.skipWhile(isIdentifierChar);
+                                if (directive_names.find(directive_text)) |directive| {
+                                    try tokenizer.addToken(.{ .directive = directive });
                                 } else {
-                                    tokenizer.reportError("no keyword '{s}' exists\n", .{keyword_text});
-                                    tokenizer.reportNote("'{s}' was interpreted as a keyword because it starts with a '.'\n", .{keyword_text});
+                                    tokenizer.reportError("no directive '{s}' exists\n", .{directive_text});
+                                    tokenizer.reportNote("'{s}' was interpreted as a directive because it starts with a '.'\n", .{directive_text});
                                 }
                             } else {
-                                tokenizer.reportError("expected a keyword after '.'\n", .{});
+                                tokenizer.reportError("expected a directive after '.'\n", .{});
                             }
                         } else {
-                            tokenizer.reportError("expected a keyword after '.'\n", .{});
+                            tokenizer.reportError("expected a directive after '.'\n", .{});
                         }
                     },
                     ' ', '\t', '\r' => _ = tokenizer.next(),
@@ -268,12 +265,11 @@ const Parser = struct {
             const token = token_with_location.token;
 
             switch (token) {
-                // TODO: not keyword, directive
-                .keyword => |keyword| {
-                    if (keyword == .sect) {
+                .directive => |directive| {
+                    if (directive == .sect) {
                         try parser.parseSection();
                     } else {
-                        print("didn't expect directive '{}'\n", .{keyword});
+                        print("didn't expect directive '{}'\n", .{directive});
                     }
                 },
                 .instruction => |_| {
@@ -309,8 +305,9 @@ const Parser = struct {
 
     fn parseSection(self: *Self) !void {
         _ = self.next() orelse return;
-        const section = self.expect(.section) orelse return;
-        try self.addNode(.{ .section = section.token.section });
+        const section = self.expectOneOfDirectives(&[_]Directive{ .text, .bss, .data }) orelse return;
+        _ = section;
+        // try self.addNode(.{ .section = section.token.section });
     }
 
     fn parseInstruction(self: *Self) !void {
@@ -320,8 +317,8 @@ const Parser = struct {
         const operand2 = self.expectInstructionOperand() orelse return;
         try self.addNode(.{ .instruction = .{
             .kind = instruction_kind.token.instruction,
-            .operand1 = operand1.token,
-            .operand2 = operand2.token,
+            .operand1 = operand1,
+            .operand2 = operand2,
         } });
     }
 
@@ -334,8 +331,30 @@ const Parser = struct {
         try self.ast.append(ast_node);
     }
 
-    fn expectInstructionOperand(self: *Self) ?TokenWithLocation {
-        return self.expectFunc(isInstructionArgument);
+    fn expectInstructionOperand(self: *Self) ?Operand {
+        if (self.next()) |token_with_location| {
+            const token = token_with_location.token;
+            switch (token) {
+                .number => {
+                    return Operand { .immediate = token.number };
+                },
+                .register => {
+                    return Operand { .register = token.register };
+                },
+                .left_paren => {
+                    const label = self.expect(.identifier) orelse return null;
+                    _ = self.expect(.right_paren);
+                    // TODO: Some indexing scheme
+                    return Operand { .memory = label.token.identifier };
+                },
+                else => {
+                    // TODO: Report error
+                    return null;
+                }
+            }
+        }
+        // TODO: Report error
+        return null;
     }
 
     fn isInstructionArgument(token: Token) bool {
@@ -356,7 +375,25 @@ const Parser = struct {
                 return null;
             }
         }
-        // TODO: Guaranteed error
+        // TODO: Report error
+        return null;
+    }
+    
+    fn expectOneOfDirectives(self: *Self, comptime expected_directives: []const Directive) ?TokenWithLocation {
+        if (self.next()) |token_with_location| {
+            switch (token_with_location.token) {
+                .directive => |directive| {
+                    if (std.mem.indexOfScalar(Directive, expected_directives, directive)) |_| {
+                         return token_with_location;
+                    }
+                },
+                else => {
+                    // TODO: Report error
+                    return null;
+                },
+            }
+        }
+        // TODO: Report error
         return null;
     }
 
@@ -403,6 +440,7 @@ const SourceFile = struct {
     contents: []const u8,
 };
 
+
 pub fn assemble(source: SourceFile, allocator: std.mem.Allocator) !std.ArrayList(AstNode) {
     const tokens = try Tokenizer.tokenize(source, allocator);
     defer tokens.deinit();
@@ -412,7 +450,6 @@ pub fn assemble(source: SourceFile, allocator: std.mem.Allocator) !std.ArrayList
     }
 
     const ast = try Parser.parse(tokens, allocator);
-    defer ast.deinit();
     for (ast.items) |node| {
         print("{}\n", .{node});
     }
@@ -420,8 +457,71 @@ pub fn assemble(source: SourceFile, allocator: std.mem.Allocator) !std.ArrayList
 }
 
 pub fn run(ast: std.ArrayList(AstNode), allocator: std.mem.Allocator) !void {
-    _ = ast;
+    print("---------------------------\n", .{});
+    var cpu = CPU {
+        .registers = undefined,
+    };
+    for (0 .. cpu.registers.len) |i| {
+        cpu.registers[i] = 0;
+    }
+    
+    print("registers = {any}\n", .{cpu.registers});
+    for (ast.items) |node| {
+        switch (node) {
+            .instruction => |instruction| {
+                step(&cpu, instruction);
+            },
+        }
+        print("registers = {any}\n", .{cpu.registers});
+    }
     _ = allocator;
+}
+
+const CPU = struct {
+    registers: [std.enums.values(Register).len]i16,
+};
+
+fn step(cpu: *CPU, instruction: Instruction) void {
+    switch (instruction.kind) {
+        .mov => {
+            const lhs = instruction.operand1;
+            const rhs = instruction.operand2;
+            var destination: *i16 = undefined;
+            
+            switch (lhs) {
+                .register => destination = &cpu.registers[@as(u32, @intFromEnum(lhs.register))],
+                .immediate => todo(), // Can't write into immediate
+                else => todo(),
+            }
+            
+            switch (rhs) {
+                .register => destination.* = cpu.registers[@as(u32, @intFromEnum(rhs.register))],
+                .immediate => destination.* = rhs.immediate,
+                else => todo(),
+            }
+        },
+        .add => {
+            const lhs = instruction.operand1;
+            const rhs = instruction.operand2;
+            var destination: *i16 = undefined;
+            
+            switch (lhs) {
+                .register => destination = &cpu.registers[@as(u32, @intFromEnum(lhs.register))],
+                .immediate => todo(), // Can't write into immediate
+                else => todo(),
+            }
+            
+            switch (rhs) {
+                .register => destination.* += cpu.registers[@as(u32, @intFromEnum(rhs.register))],
+                .immediate => destination.* += rhs.immediate,
+                else => todo(),
+            }
+        },
+    }
+}
+
+fn todo() noreturn {
+    std.debug.panic("this was not yet implemented\n", .{});
 }
 
 fn EnumNamesToMembers(comptime T: type) type {
