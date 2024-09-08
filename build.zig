@@ -50,7 +50,7 @@ pub fn build(b: *std.Build) void {
         run_tui_cmd.addArgs(args);
     }
 
-    const run_tui_step = b.step("tui", "Run the text user interface");
+    const run_tui_step = b.step("run-tui", "Run the text user interface");
     run_tui_step.dependOn(&run_tui_cmd.step);
 
     const lib_as88_unit_tests = b.addTest(.{
