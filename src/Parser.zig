@@ -5,19 +5,21 @@ const Tokenizer = @import("Tokenizer.zig");
 
 const Token = Tokenizer.Token;
 const print = std.debug.print;
+const SourceLocation = Tokenizer.SourceLocation;
 
 
 const Self = @This();
 
-pub const ParseResult = struct {
+pub const AssembledCode = struct {
     instructions: std.ArrayList(Instruction),
-    memory: std.ArrayList(Memory),
+    memory: std.ArrayList([]const u8),
     labels: std.StringHashMap(Label),
 };
 
 pub const Instruction = struct {
     mnemonic: intel8088.InstructionMnemonic,
-    operands: []const intel8088.Operand,
+    operands: []const intel8088.InstructionOperand,
+    location: SourceLocation,
 };
 
 // A label can address either memory or code, e.g.
@@ -29,12 +31,6 @@ pub const Label = union(enum) {
     memory_field: u16,
 };
 
-pub const Memory = struct {
-    size:  u16,
-    value: i16, // This is incorrect. Memory can be of any size.
-};
-
-
 const ParseState = enum {
     no_section,
     text_section,
@@ -44,20 +40,21 @@ const ParseState = enum {
 
 const PreprocessResult = struct {
     labels: std.StringHashMap(Label),
-    memory: std.ArrayList(Memory),
+    memory: std.ArrayList([]const u8),
 };
 
 
 allocator: std.mem.Allocator,
-result: ParseResult,
+result: AssembledCode,
 tokens: []Token,
+locations: []SourceLocation,
 position: usize,
 
 
 pub fn parse(
     tokens: std.MultiArrayList(Tokenizer.TokenWithLocation),
     allocator: std.mem.Allocator
-) !ParseResult {
+) !AssembledCode {
     var parser = Self{
         .allocator = allocator,
         .result = .{
@@ -66,6 +63,7 @@ pub fn parse(
             .labels = undefined,
         },
         .tokens = tokens.items(.token),
+        .locations = tokens.items(.location),
         .position = 0,
     };
 
@@ -138,7 +136,7 @@ fn preprocess(
     defer self.position = 0;
 
     var labels = std.StringHashMap(Label).init(allocator);
-    var memory = std.ArrayList(Memory).init(allocator);
+    var memory = std.ArrayList([]const u8).init(allocator);
     
     var next_token_is_under_label: ?[]const u8 = null;
     var instruction_pointer: u16 = 0;
@@ -156,14 +154,18 @@ fn preprocess(
                     continue;
                 }
 
-                var memory_field: Memory = undefined;
+                var maybe_memory_field: ?[]u8 = null;
                 if (directive == .space) {
                     if (self.next()) |next_token| {
                         if (next_token.is(.number)) {
                             // TODO: Check that we are in bss section
                             if (next_token.number >= 0) {
-                                memory_field.size = @as(u16, @intCast(next_token.number));
-                                memory_field.value = 0;
+                                // TODO: Check that number is not negatvie
+                                maybe_memory_field = try allocator.alloc(u8, @as(usize, @intCast(next_token.number)));
+                                for (0 .. maybe_memory_field.?.len) |i| {
+                                    // How to zero init?
+                                    maybe_memory_field.?[i] = 0;
+                                }
                             } else {
                                 // TODO: Report error
                             }
@@ -174,21 +176,24 @@ fn preprocess(
                         // TODO: Report error
                     }
                 } else if (directive == .word) {
-                    memory_field.size = 2;
                     if (self.match(.number)) |number_token| {
-                        memory_field.value = number_token.number;
+                        maybe_memory_field = try allocator.alloc(u8, 2);
+                        std.mem.writeInt(i16, maybe_memory_field.?[0 .. 2], number_token.number, .little);
                     } else {
                         // TODO: Report error
                     }
                 } else {
                     unreachable;
                 }
-                try memory.append(memory_field);
-
+                
                 if (next_token_is_under_label) |label_identifier| {
                     try labels.put(label_identifier, Label{ .memory_field = memory_pointer });
                 }
-                memory_pointer += memory_field.size;
+
+                if (maybe_memory_field) |memory_field| {
+                    try memory.append(memory_field);
+                    memory_pointer += @as(u16, @intCast(memory_field.len));
+                }
             },
             else => {
                 if (next_token_is_under_label) |_| {
@@ -206,27 +211,27 @@ fn preprocess(
 
 // TODO: Check the operands according to description
 fn parseInstruction(self: *Self) !void {
+    const instruction_location = self.peekLocation();
     const instruction_token = self.next() orelse return;
 
     const description = intel8088.isa.get(instruction_token.instruction_mnemonic);
 
-    // I could do the [8]Operand approach here as well, but it wastes
-    // too much memory. I know that I am using an arena to allocate,
-    // so this is fast anyway.
-    var operands = try self.allocator.alloc(intel8088.Operand, description.operand_count);
-    for (0 .. description.operand_count) |i| {
+    // I know that I am using an arena, so this is fast.
+    var operands = try self.allocator.alloc(intel8088.InstructionOperand, description.allowed_operands.len);
+    for (0 .. description.allowed_operands.len) |i| {
         operands[i] = self.parseInstructionOperand() orelse return;
-        if (i != description.operand_count - 1) {
+        if (i != description.allowed_operands.len - 1) {
             _ = self.match(.comma) orelse return;
         }
     }
     try self.result.instructions.append(.{
         .mnemonic = instruction_token.instruction_mnemonic,
         .operands = operands,
+        .location = instruction_location,
     });
 }
 
-fn parseInstructionOperand(self: *Self) ?intel8088.Operand {
+fn parseInstructionOperand(self: *Self) ?intel8088.InstructionOperand {
     if (self.next()) |token| {
         switch (token) {
             .number => {
@@ -279,6 +284,10 @@ fn peek(self: *const Self) ?Token {
     return self.peekN(0);
 }
 
+fn peekLocation(self: *const Self) SourceLocation {
+    return self.locations[self.position];
+}
+
 fn peekN(self: *const Self, n: usize) ?Token {
     return common.getOrNull(Token, self.tokens, self.position + n);
 }
@@ -305,14 +314,14 @@ test "parses text section" {
     defer arena.deinit();
 
     {
-        const source = Tokenizer.ProgramSource{
+        const source = Tokenizer.ProgramSourceCode{
             .filepath = null,
             .contents = shared_beginning ++
                         \\  MOV AX, BX
         };
 
         const expected_instructions: []const Instruction = &.{
-            .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .register = .bx } } },
+            .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .register = .bx } }, .location = .{ .line = 2, .column = 3 } },
         };
 
         const tokens = try Tokenizer.tokenize(source, &arena);
@@ -329,14 +338,14 @@ test "parser compound expression" {
     defer arena.deinit();
 
    {
-        const source = Tokenizer.ProgramSource{
+        const source = Tokenizer.ProgramSourceCode{
             .filepath = null,
             .contents = shared_beginning ++
                         \\  MOV AX, 1 + 2
         };
 
         const expected_instructions: []const Instruction = &.{
-            .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .immediate = 3 } } },
+            .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .immediate = 3 } }, .location = .{ .line = 2, .column = 3 } },
         };
 
         const tokens = try Tokenizer.tokenize(source, &arena);
@@ -353,7 +362,7 @@ test "parses data section" {
     defer arena.deinit();
 
     {
-        const source = Tokenizer.ProgramSource{
+        const source = Tokenizer.ProgramSourceCode{
             .filepath = null,
             .contents = shared_beginning ++
                         \\x:    .WORD   3
@@ -365,9 +374,9 @@ test "parses data section" {
             .{ .memory_field = 2 },
         };
 
-        const expected_memory = &[_]Memory{
-            .{ .size = 2, .value = 3 },
-            .{ .size = 2, .value = 5 },
+        const expected_memory = &[_][]const u8{
+            &.{ 3, 0 },
+            &.{ 5, 0 },
         };
 
         const tokens = try Tokenizer.tokenize(source, &arena);
@@ -377,12 +386,12 @@ test "parses data section" {
         defer allocator.free(actual_labels);
 
         try testing.expectEqualSlices(Label, expected_labels, actual_labels);
-        try testing.expectEqualSlices(Memory, expected_memory, compilation_result.memory.items);
+        try testing.expectEqualDeep(expected_memory, compilation_result.memory.items);
     }
 
     // Need to change memory struct for this test to work
     //{
-    //    const source = Tokenizer.ProgramSource{
+    //    const source = Tokenizer.ProgramSourceCode{
     //        .filepath = null,
     //        .contents = shared_beginning ++
     //                    \\hello_world:  .ASCII "Hello, World!\n"
@@ -404,18 +413,18 @@ test "parses bss section" {
     defer arena.deinit();
 
     {
-        const source = Tokenizer.ProgramSource{
+        const source = Tokenizer.ProgramSourceCode{
             .filepath = null,
             .contents = shared_beginning ++
-                        \\x:    .SPACE   2
+                        \\x:    .SPACE   7
         };
 
         const expected_labels = &[_]Label{
             .{ .memory_field = 0 },
         };
 
-        const expected_memory = &[_]Memory{
-            .{ .size = 2, .value = 0 },
+        const expected_memory = &[_][]const u8{
+            &.{ 0, 0, 0, 0, 0, 0, 0 },
         };
 
         const tokens = try Tokenizer.tokenize(source, &arena);
@@ -425,7 +434,7 @@ test "parses bss section" {
         defer allocator.free(actual_labels);
 
         try testing.expectEqualSlices(Label, expected_labels, actual_labels);
-        try testing.expectEqualSlices(Memory, expected_memory, compilation_result.memory.items);
+        try testing.expectEqualDeep(expected_memory, compilation_result.memory.items);
     }
 }
 

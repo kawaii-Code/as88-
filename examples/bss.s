@@ -10,4 +10,4 @@
 .SECT .DATA
 
 .SECT .BSS
-x:	.SPACE	2
+x:	.SPACE	8

@@ -7,7 +7,7 @@ const print = std.debug.print;
 
 const Self = @This();
 
-pub const ProgramSource = struct {
+pub const ProgramSourceCode = struct {
     filepath: ?[]const u8,
     contents: []const u8,
 };
@@ -55,7 +55,7 @@ tokens: std.MultiArrayList(TokenWithLocation),
 
 
 pub fn tokenize(
-    source: ProgramSource,
+    source: ProgramSourceCode,
     arena: *std.heap.ArenaAllocator
 ) !std.MultiArrayList(TokenWithLocation) {
     var tokenizer = Self{
@@ -257,7 +257,7 @@ const testing = std.testing;
 test "tokenize labels" {
     const allocator = std.testing.allocator;
     {
-        const source = ProgramSource{
+        const source = ProgramSourceCode{
             .filepath = null,
             .contents =
                 \\L1:
@@ -279,7 +279,7 @@ test "tokenize labels" {
 test "tokenize string literals" {
     const allocator = std.testing.allocator;
     {
-        const source = ProgramSource{
+        const source = ProgramSourceCode{
             .filepath = null,
             .contents =
                 \\"Hello, World!\n"
@@ -294,7 +294,7 @@ test "tokenize string literals" {
     }
 
     {
-        const source = ProgramSource{
+        const source = ProgramSourceCode{
             .filepath = null,
             .contents =
                 \\".SECT .TEXT MOV AX, BX;"
@@ -312,7 +312,7 @@ test "tokenize string literals" {
     }
 
    {
-        const source = ProgramSource{
+        const source = ProgramSourceCode{
             .filepath = null,
             .contents =
                 \\"\""
@@ -326,7 +326,7 @@ test "tokenize string literals" {
     }
     
     {
-        const source = ProgramSource{
+        const source = ProgramSourceCode{
             .filepath = null,
             .contents =
                 \\"newline - \n, tab - \t, backslash - \\, quote - \", escaped quote - \\\", single quote - '"
@@ -347,7 +347,7 @@ test "tokenize string literals" {
 
 test "tokenize simple source file" {
     const allocator = std.testing.allocator;
-    const source = ProgramSource{
+    const source = ProgramSourceCode{
         .filepath = null,
         .contents = 
             \\! Comment

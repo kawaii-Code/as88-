@@ -19,22 +19,19 @@ pub fn main() !void {
     }
 
     const filepath = args[1];
-    const source_file = std.fs.cwd().openFile(filepath, .{ .mode = .read_only }) catch |err| {
-        print("Error when opening {s}: {}\n", .{ filepath, err });
-        std.process.exit(1);
-    };
-
-    const max_source_file_size = common.megabytes(8);
-    const source = source_file.readToEndAlloc(allocator, max_source_file_size) catch |err| {
-        print("Error when reading {s}: {}\n", .{ filepath, err });
-        std.process.exit(1);
-    };
+    const source = common.readEntireFile(filepath, allocator);
     defer allocator.free(source);
-
+    
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    const assembled_code = try as88.assemble(.{ .filepath = filepath, .contents = source }, &arena);
-    try as88.run(assembled_code, allocator);
+    const assembled_code = try as88.assemble(.{
+        .filepath = filepath,
+        .contents = source,
+    }, &arena);
+    
+    var emulator = try as88.Emulator.init(arena.allocator(), assembled_code);
+    defer emulator.deinit();
+    while (emulator.step()) {}
 }
 
 

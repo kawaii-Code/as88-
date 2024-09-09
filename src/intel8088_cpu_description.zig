@@ -1,8 +1,8 @@
 const std = @import("std");
-
+const common = @import("common.zig");
 
 pub const InstructionMnemonic = enum {
-    pub const Names = EnumMemberNamesToStrings(@This()).init();
+    pub const Names = common.EnumMemberNamesToStrings(@This()).init();
 
     mov,
     add,
@@ -10,21 +10,91 @@ pub const InstructionMnemonic = enum {
 };
 
 pub const Register = enum {
-    pub const Names = EnumMemberNamesToStrings(@This()).init();
+    pub const Names = common.EnumMemberNamesToStrings(@This()).init();
 
-    ax,
-    bx,
-    cx,
-    dx,
+    //pub const @"16 Wide" = init: {
+    //    const values = std.enums.values(@This());
+    //    var result: [values.len - @"8 Wide".len] = undefined;
+    //    var result_index: usize = 0;
+    //    for (values) |value| {
+    //        if (!value.is8bit()) {
+    //            result[result_index] = value;
+    //            result_index += 1;
+    //        }
+    //    }
+    //    break :init result;
+    //};
+
+    //pub const @"8 Wide" = [8]@This(){ .ah, .al, .bh, .bl, .ch, .cl, .dh, .dl };
+
+    // General purpose registers
+    ax,  ah, al,
+    bx,  bh, bl,
+    cx,  ch, cl,
+    dx,  dh, dl,
+
+    // Segment registers
+    cs,
+    ds,
+    ss,
+    es,
+
+    // Pointer and index registers
+    sp,
+    bp,
+    si,
+    di,
+
+    // Instruction pointer
+    ip,
+
+    pub fn is8bit(self: @This()) bool {
+        return switch (self) {
+            .ah, .al, .bh, .bl,
+            .ch, .cl, .dh, .dl => true,
+            else => false,
+        };
+    }
+};
+
+pub const Flag = enum {
+    tf, df, @"if",
+    of, sf, zf, af, pf, cf,  
+};
+
+pub const InstructionOperand = union(enum) {
+    immediate: i16,
+    register: Register,
+    memory: u16,
+};
+
+pub const CPU = struct {
+    // Let's assume that the CPU has a RAM chip inserted in it :)
+    memory: []u8,
+    // TODO: This won't work when AX, AL, etc. are introduced,
+    // since they share values.
+    registers: std.EnumArray(Register, i16),
+    flags: std.EnumArray(Flag, bool),
+
+    pub fn load(self: *const @This(), operand: InstructionOperand) i16 {
+        return switch (operand) {
+            .immediate => |value| value,
+            .register => |r| self.registers.get(r),
+            .memory => |address| self.memory[address],
+        };
+    }
+
+    pub fn store(self: *@This(), operand: InstructionOperand, value: i16) void {
+        switch (operand) {
+            .immediate => unreachable,
+            .register => |r| self.registers.set(r, value),
+            .memory => |address| std.mem.writeInt(i16, self.memory[address .. address + 2][0..2], value, .little),
+        }
+    }
 };
 
 pub const InstructionDescription = struct {
-    mnemonic: InstructionMnemonic,
-    // I can't make this a slice because of zig comptime limitations.
-    // The next best solution is to put a reasonable upper bound.
-    // 8 is fine, since no instruction takes 8 operands.
-    operands: [8]AllowedOperands,
-    operand_count: usize,
+    allowed_operands: []const AllowedOperands,
 };
 
 pub const AllowedOperands = std.EnumSet(enum {
@@ -33,49 +103,16 @@ pub const AllowedOperands = std.EnumSet(enum {
     memory,
 });
 
-pub const Operand = union(enum) {
-    immediate: i16,
-    register: Register,
-    memory: u16,
-
-    const Parser = @import("Parser.zig");
-};
-
-pub const CPU = struct {
-    // Let's assume that the CPU has a RAM chip inserted in it :)
-    memory: []i16,
-    // TODO: This won't work when AX, AL, etc. are introduced,
-    // since they share values.
-    registers: std.EnumArray(Register, i16),
-
-    pub fn load(self: *const @This(), operand: Operand) i16 {
-        return switch (operand) {
-            .immediate => |value| value,
-            .register => |r| self.registers.get(r),
-            .memory => |address| self.memory[address],
-        };
-    }
-
-    pub fn store(self: *@This(), operand: Operand, value: i16) void {
-        switch (operand) {
-            .immediate => unreachable,
-            .register => |r| self.registers.set(r, value),
-            .memory => |address| self.memory[address] = value,
-        }
-    }
-};
-
-
 // That's a comptime generated array, which is a bit crazy.
 pub const isa = std.EnumArray(InstructionMnemonic, InstructionDescription).init(.{
-    .mov = instruction(.mov, .{ memoryOrRegister(), memoryOrRegisterOrImmediate() }),
-    .add = instruction(.add, .{ memoryOrRegister(), memoryOrRegisterOrImmediate() }),
-    .sub = instruction(.sub, .{ memoryOrRegister(), memoryOrRegisterOrImmediate() }),
+    .mov = .{ .allowed_operands = &.{ memOrReg(), memOrRegOrImm() } },
+    .add = .{ .allowed_operands = &.{ memOrReg(), memOrRegOrImm() } },
+    .sub = .{ .allowed_operands = &.{ memOrReg(), memOrRegOrImm() } },
 });
 
 pub const asm_syntax = struct {
     pub const Directive = enum {
-        pub const Names = EnumMemberNamesToStrings(@This()).init();
+        pub const Names = common.EnumMemberNamesToStrings(@This()).init();
 
         sect,
         word,
@@ -104,63 +141,14 @@ pub const asm_syntax = struct {
     };
 };
 
-
-fn instruction(mnemonic: InstructionMnemonic, comptime allowed_operands: anytype) InstructionDescription {
-    const OperandsType = @TypeOf(allowed_operands);
-    const operands_type_info = @typeInfo(OperandsType);
-    if (operands_type_info != .Struct) {
-        @compileError("expected tuple, found " ++ @typeName(allowed_operands));
-    }
-
-    const struct_info = operands_type_info.Struct;
-    if (!struct_info.is_tuple) {
-        @compileError("expected tuple, found struct");
-    }
-    
-    const fields_info = struct_info.fields;
-    if (fields_info.len >= 8) {
-        @compileError("too many operands, max is 8");
-    }
-
-    var resulting_operands: [8]AllowedOperands = undefined;
-    inline for (fields_info, 0..) |f, i| {
-        resulting_operands[i] = @field(allowed_operands, f.name);
-    }
-
-    return .{
-        .mnemonic = mnemonic,
-        .operands = resulting_operands,
-        .operand_count = fields_info.len,
-    };
+fn memOrImm() AllowedOperands {
+    return AllowedOperands.initMany(&.{ .memory, .immediate });
 }
 
-fn memoryOrRegister() AllowedOperands {
+fn memOrReg() AllowedOperands {
     return AllowedOperands.initMany(&.{ .memory, .register });
 }
 
-fn memoryOrRegisterOrImmediate() AllowedOperands {
+fn memOrRegOrImm() AllowedOperands {
     return AllowedOperands.initMany(&.{ .memory, .register, .immediate });
-}
-
-fn EnumMemberNamesToStrings(comptime T: type) type {
-    return struct {
-        names: @TypeOf(std.meta.fieldNames(T)),
-        members: []const T,
-
-        pub fn init() @This() {
-            return @This(){
-                .names = std.meta.fieldNames(T),
-                .members = std.enums.values(T),
-            };
-        }
-
-        pub fn find(self: *const @This(), name: []const u8) ?T {
-            for (0..self.names.len) |i| {
-                if (std.ascii.eqlIgnoreCase(self.names[i], name)) {
-                    return self.members[i];
-                }
-            }
-            return null;
-        }
-    };
 }
