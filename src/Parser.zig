@@ -150,7 +150,7 @@ fn preprocess(
                 instruction_pointer += 1;
             },
             .directive => |directive| {
-                if (!directive.isOneOf(&[_]intel8088.asm_syntax.Directive{ .word, .space })) {
+                if (!directive.isMemoryDataType()) {
                     continue;
                 }
 
@@ -182,12 +182,34 @@ fn preprocess(
                     } else {
                         // TODO: Report error
                     }
+                } else if (directive == .ascii or directive == .asciz) {
+                    if (self.match(.string)) |string_token| {
+                        if (directive == .asciz) {
+                            const string0 = try allocator.dupeZ(u8, string_token.string);
+                            // Interestingly, in zig, an implicit cast is allowed here:
+                            // maybe_memory_field = string0; // [:0]u8 -> []u8
+                            //
+                            // But it doesn't include the sentinel element. I don't know if this is
+                            // good or bad, but it got me a little.
+                            maybe_memory_field = string0[0 .. string0.len + 1];
+                        } else {
+                            maybe_memory_field = try allocator.dupe(u8, string_token.string);
+                        }
+                    } else {
+                        // TODO: Report error
+                    }
                 } else {
                     unreachable;
                 }
                 
                 if (next_token_is_under_label) |label_identifier| {
-                    try labels.put(label_identifier, Label{ .memory_field = memory_pointer });
+                    const bucket = try labels.getOrPut(label_identifier);
+                    if (bucket.found_existing) {
+                        // TODO: Report duplicate label error
+                        unreachable;
+                    } else {
+                        bucket.value_ptr.* = Label{ .memory_field = memory_pointer };
+                    }
                 }
 
                 if (maybe_memory_field) |memory_field| {
@@ -325,9 +347,9 @@ test "parses text section" {
         };
 
         const tokens = try Tokenizer.tokenize(source, &arena);
-        const compilation_result = try parse(tokens, arena.allocator());
+        const assembled_program = try parse(tokens, arena.allocator());
 
-        try testing.expectEqualDeep(expected_instructions, compilation_result.instructions.items);
+        try testing.expectEqualDeep(expected_instructions, assembled_program.instructions.items);
     }
 }
  
@@ -349,9 +371,9 @@ test "parser compound expression" {
         };
 
         const tokens = try Tokenizer.tokenize(source, &arena);
-        const compilation_result = try parse(tokens, arena.allocator());
+        const assembled_program = try parse(tokens, arena.allocator());
 
-        try testing.expectEqualDeep(expected_instructions, compilation_result.instructions.items);
+        try testing.expectEqualDeep(expected_instructions, assembled_program.instructions.items);
     }
 }
 
@@ -380,30 +402,47 @@ test "parses data section" {
         };
 
         const tokens = try Tokenizer.tokenize(source, &arena);
-        const compilation_result = try parse(tokens, arena.allocator());
+        const assembled_program = try parse(tokens, arena.allocator());
 
-        const actual_labels = collectLabelsToOwnedSlice(&compilation_result.labels, allocator);
+        const actual_labels = collectLabelsToOwnedSlice(&assembled_program.labels, allocator);
         defer allocator.free(actual_labels);
 
         try testing.expectEqualSlices(Label, expected_labels, actual_labels);
-        try testing.expectEqualDeep(expected_memory, compilation_result.memory.items);
+        try testing.expectEqualDeep(expected_memory, assembled_program.memory.items);
     }
 
-    // Need to change memory struct for this test to work
-    //{
-    //    const source = Tokenizer.ProgramSourceCode{
-    //        .filepath = null,
-    //        .contents = shared_beginning ++
-    //                    \\hello_world:  .ASCII "Hello, World!\n"
-    //                    \\hello_world:  .ASCIZ "Hello, World!\n"
-    //    };
+    {
+        const source = Tokenizer.ProgramSourceCode{
+            .filepath = null,
+            .contents = shared_beginning ++
+                        \\hello_world:  .ASCII "Hello, World!\n"
+                        \\hello_world0:  .ASCIZ "Hello, World!\n"
+        };
 
-    //    const tokens = try Tokenizer.tokenize(source, &arena);
-    //    const compilation_result = try parse(tokens, arena.allocator());
+        // Label order is messed up because HashMap does not guarantee order:
+        // https://ziglang.org/documentation/master/std/#std.hash_map.HashMap
+        // I don't really care about order though, it's enough that the memory
+        // pointers are correct. Order can be hardcoded, like here.
+        const expected_labels = &[_]Label {
+            .{ .memory_field = 14 },
+            .{ .memory_field = 0 },
+        };
 
-    //    try testing.expectEqualSlices(Label, expected_labels, compilation_result.labels.items);
-    //    try testing.expectEqualSlices(Memory, expected_memory, compilation_result.memory.items);
-    //}
+        const expected_memory = &[_][]const u8{
+            // I didn't do this by hand
+            &.{72, 101, 108, 108, 111, 44, 32, 87, 111, 114, 108, 100, 33, 10 },
+            &.{72, 101, 108, 108, 111, 44, 32, 87, 111, 114, 108, 100, 33, 10, 0},
+        };
+        
+        const tokens = try Tokenizer.tokenize(source, &arena);
+        const assembled_program = try parse(tokens, arena.allocator());
+
+        const actual_labels = collectLabelsToOwnedSlice(&assembled_program.labels, allocator);
+        defer allocator.free(actual_labels);
+
+        try testing.expectEqualSlices(Label, expected_labels, actual_labels);
+        try testing.expectEqualDeep(expected_memory, assembled_program.memory.items);
+    }
 }
 
 test "parses bss section" {
@@ -428,13 +467,13 @@ test "parses bss section" {
         };
 
         const tokens = try Tokenizer.tokenize(source, &arena);
-        const compilation_result = try parse(tokens, arena.allocator());
+        const assembled_program = try parse(tokens, arena.allocator());
 
-        const actual_labels = collectLabelsToOwnedSlice(&compilation_result.labels, allocator);
+        const actual_labels = collectLabelsToOwnedSlice(&assembled_program.labels, allocator);
         defer allocator.free(actual_labels);
 
         try testing.expectEqualSlices(Label, expected_labels, actual_labels);
-        try testing.expectEqualDeep(expected_memory, compilation_result.memory.items);
+        try testing.expectEqualDeep(expected_memory, assembled_program.memory.items);
     }
 }
 

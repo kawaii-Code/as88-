@@ -114,15 +114,23 @@ pub const asm_syntax = struct {
     pub const Directive = enum {
         pub const Names = common.EnumMemberNamesToStrings(@This()).init();
 
-        sect,
+        // Memory data types
         word,
+        ascii,
+        asciz,
         space,
+
+        // Sections
+        sect,
         text,
         data,
         bss,
-    
-        pub fn isOneOf(self: @This(), expected: []const @This()) bool {
-            return std.mem.indexOfScalar(@This(), expected, self) != null;
+
+        pub fn isMemoryDataType(self: @This()) bool {
+            return switch (self) {
+                .word, .ascii,. asciz, .space => true,
+                .sect, .text, .data, .bss => false,
+            };
         }
     
         pub fn isSectionType(self: @This()) bool {

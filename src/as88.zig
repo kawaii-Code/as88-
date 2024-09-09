@@ -80,7 +80,7 @@ pub const Emulator = struct {
     }
     
     pub fn step(self: *@This()) bool {
-        var cpu = self.cpu;
+        const cpu = &self.cpu;
         const instruction = self.currentInstruction();
 
         const op1 = common.getOrNull(intel8088.InstructionOperand, instruction.operands, 0);
