@@ -72,6 +72,9 @@ pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
+    var render_arena = std.heap.ArenaAllocator.init(allocator);
+    defer render_arena.deinit();
+
     const source = common.readEntireFile(filepath, arena.allocator());
     const source_code_lines = try splitToLinesAlloc(source, arena.allocator());
     
@@ -110,18 +113,28 @@ pub fn main() !void {
     
     var text_input = TextInput.init(arena.allocator(), &vx.unicode);
     defer text_input.deinit();
+    var program_ends_at_next_event: bool = false;
     while (true) {
         const event = loop.nextEvent();
+        if (program_ends_at_next_event) {
+            break;
+        }
+
         switch (event) {
             .key_press => |key| {
                 if (key.matches(vaxis.Key.enter, .{})) {
+                    const user_input = try text_input.toOwnedSlice();
+                    if (std.mem.eql(u8, user_input, "q")) {
+                        break;
+                    }
+
                     const program_done = (try emulator.step()) == null;
                     if (program_done) {
-                        break;
+                        program_ends_at_next_event = true;
                     } else {
                         current_line = emulator.currentLineInSourceFile();
                     }
-                    previous_commands.add(try text_input.toOwnedSlice());
+                    previous_commands.add(user_input);
                     text_input.reset();
                 } else if (key.matches('c', .{ .ctrl = true })) {
                     break;
@@ -135,26 +148,6 @@ pub fn main() !void {
         }
 
         const root_window = vx.window();
-
-        const test_register_window_contents =
-            \\CS: 00  DS=SS=ES: 001*
-            \\AH:00 AL:05 AX:     5
-            \\BH:00 BL:00 BX:     0
-            \\CH:00 CL:00 CX:     0 
-            \\DH:00 DL:00 DX:     0
-            \\SP: 7ff8 SF O D S Z C 
-            \\BP: 7ff8 CC - > p - - 
-            \\SI: 0000  IP:0007:PC 
-            \\DI: 0000  x+4
-        ;
-        
-        const test_code_window_contents =
-            \\.SECT .TEXT
-            \\.SECT .TEXT
-            \\    MOV AX, 3
-            \\    ADD AX, (x)
-            \\>   MOV (res), AX
-        ;
 
         root_window.clear();
         const left_side_width = 25;
@@ -221,11 +214,102 @@ pub fn main() !void {
             });
         }
 
-        const rw = plainTextSegment(test_register_window_contents);
-        const cw = plainTextSegment(test_code_window_contents);
-        _ = cw;
 
-        _ = try register_window.printSegment(rw, .{});
+        const RegisterWindow = struct {
+            window: vaxis.Window,
+            line: usize,
+            allocator: std.mem.Allocator,
+
+            pub fn lineStream(self: @This()) !std.io.FixedBufferStream([]u8) {
+                const buf = try self.allocator.alloc(u8, left_side_width - 3);
+                var stream = std.io.fixedBufferStream(buf);
+                _ = stream.write(" ") catch unreachable;
+                return stream;
+            }
+
+            pub fn drawLine(self: *@This(), text: []u8) void {
+                const segment = plainTextSegment(text);
+                _ = try self.window.printSegment(segment, .{
+                    .row_offset = self.line,
+                });
+                self.line += 1;
+            }
+        };
+
+        _ = render_arena.reset(.retain_capacity);
+        var registers = RegisterWindow {
+            .window = register_window,
+            .line = 0,
+            .allocator = render_arena.allocator(),
+        };
+        {
+            var stream = try registers.lineStream();
+            const cs = @as(u16, @bitCast(emulator.registers.get(.cs)));
+            const ds = @as(u16, @bitCast(emulator.registers.get(.ds)));
+            const ss = @as(u16, @bitCast(emulator.registers.get(.ss)));
+            const es = @as(u16, @bitCast(emulator.registers.get(.es)));
+            std.debug.assert(ds == ss and ss == es);
+            try std.fmt.format(stream.writer(), "CS: {x:0>2}  DS=SS=ES: {x:0>3}", .{cs, ds});
+            registers.drawLine(stream.buffer);
+        }
+        {
+            var stream = try registers.lineStream();
+            const ah = @as(u16, @bitCast(emulator.registers.get(.ah)));
+            const al = @as(u16, @bitCast(emulator.registers.get(.al)));
+            const ax = @as(i16, @bitCast(emulator.registers.get(.ax)));
+            try std.fmt.format(stream.writer(), "AH:{x:0>2} AL:{x:0>2} AX:{d: >6}", .{ah, al, ax});
+            registers.drawLine(stream.buffer);
+        }
+        {
+            var stream = try registers.lineStream();
+            const bh = @as(u16, @bitCast(emulator.registers.get(.bh)));
+            const bl = @as(u16, @bitCast(emulator.registers.get(.bl)));
+            const bx = @as(i16, @bitCast(emulator.registers.get(.bx)));
+            try std.fmt.format(stream.writer(), "BH:{x:0>2} BL:{x:0>2} BX:{d: >6}", .{bh, bl, bx});
+            registers.drawLine(stream.buffer);
+        }
+        {
+            var stream = try registers.lineStream();
+            const ch = @as(u16, @bitCast(emulator.registers.get(.ch)));
+            const cl = @as(u16, @bitCast(emulator.registers.get(.cl)));
+            const cx = @as(i16, @bitCast(emulator.registers.get(.cx)));
+            try std.fmt.format(stream.writer(), "CH:{x:0>2} CL:{x:0>2} CX:{d: >6}", .{ch, cl, cx});
+            registers.drawLine(stream.buffer);
+        }
+        {
+            var stream = try registers.lineStream();
+            const dh = @as(u16, @bitCast(emulator.registers.get(.dh)));
+            const dl = @as(u16, @bitCast(emulator.registers.get(.dl)));
+            const dx = @as(i16, @bitCast(emulator.registers.get(.dx)));
+            try std.fmt.format(stream.writer(), "DH:{x:0>2} DL:{x:0>2} DX:{d: >6}", .{dh, dl, dx});
+            registers.drawLine(stream.buffer);
+        }
+        {
+            var stream = try registers.lineStream();
+            const sp = @as(u16, @bitCast(emulator.registers.get(.sp)));
+            try std.fmt.format(stream.writer(), "SP: {x:0>4} TODO: Flags ", .{sp});
+            registers.drawLine(stream.buffer);
+        }
+        {
+            var stream = try registers.lineStream();
+            const bp = @as(u16, @bitCast(emulator.registers.get(.bp)));
+            try std.fmt.format(stream.writer(), "BP: {x:0>4} TODO: What? ", .{bp});
+            registers.drawLine(stream.buffer);
+        }
+        {
+            var stream = try registers.lineStream();
+            const si = @as(u16, @bitCast(emulator.registers.get(.si)));
+            const ip = @as(u16, @bitCast(emulator.registers.get(.ip)));
+            try std.fmt.format(stream.writer(), "SI: {x:0>4}  IP:{x:0>4}:PC ", .{si, ip});
+            registers.drawLine(stream.buffer);
+        }
+        {
+            var stream = try registers.lineStream();
+            const di = @as(u16, @bitCast(emulator.registers.get(.di)));
+            try std.fmt.format(stream.writer(), "DI: {x:0>4} .TEXT+0     ", .{di});
+            registers.drawLine(stream.buffer);
+        }
+
         //_ = try code_window.printSegment(cw, .{});
         text_input.draw(command_prompt);
         

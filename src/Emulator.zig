@@ -158,7 +158,7 @@ fn applyToChild(self: *const @This(), child: intel8088.Register, value: i16) Dif
     if (child.isLow()) {
         next_value = value & 0x00FF;
     } else {
-       next_value = @as(i16, @bitCast(@shrExact(@as(u16, @bitCast(value)) & 0xFF00, 8)));
+        next_value = @as(i16, @bitCast(@shrExact(@as(u16, @bitCast(value)) & 0xFF00, 8)));
     }
 
     return Diff {
