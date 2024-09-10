@@ -32,6 +32,7 @@ pub const Token = union(enum) {
 
     left_paren,
     right_paren,
+    equals_sign,
     
     plus,
     minus,
@@ -95,6 +96,7 @@ pub fn tokenize(
                 ';' => try tokenizer.addTokenAndNext(.semicolon),
                 '+' => try tokenizer.addTokenAndNext(.plus),
                 '*' => try tokenizer.addTokenAndNext(.star),
+                '=' => try tokenizer.addTokenAndNext(.equals_sign),
                 '/' => try tokenizer.addTokenAndNext(.forward_slash),
                 '-', '0'...'9' => number: {
                     if (c == '-' and !std.ascii.isDigit(tokenizer.peekN(1) orelse 'a')) {
@@ -428,6 +430,34 @@ test "tokenizes a compound expression" {
         .{ .identifier = "my_label" },
         .right_paren,
         
+        .newline,
+    };
+    
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var actual_tokens = try tokenize(source, &arena);
+
+    try testing.expectEqualDeep(&expected_tokens, actual_tokens.items(.token));
+}
+
+test "tokenizes a constant declaration and a label" {
+    const allocator = std.testing.allocator;
+    const source = ProgramSourceCode{
+        .filepath = null,
+        .contents = 
+            \\  _MY_VAR = 2
+            \\MOV   AX, _MY_VAR
+    };
+    const expected_tokens = [_]Token {
+        .{ .identifier = "_MY_VAR" },
+        .equals_sign,
+        .{ .number = 2 },
+        .newline,
+        
+        .{ .instruction_mnemonic = .mov },
+        .{ .register = .ax },
+        .comma,
+        .{ .identifier = "_MY_VAR" },
         .newline,
     };
     

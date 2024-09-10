@@ -14,6 +14,7 @@ pub const AssembledCode = struct {
     instructions: std.ArrayList(Instruction),
     memory: std.ArrayList([]const u8),
     labels: std.StringHashMap(Label),
+    constants: std.StringHashMap(i16),
 };
 
 pub const Instruction = struct {
@@ -38,11 +39,6 @@ const ParseState = enum {
     bss_section,
 };
 
-const PreprocessResult = struct {
-    labels: std.StringHashMap(Label),
-    memory: std.ArrayList([]const u8),
-};
-
 
 allocator: std.mem.Allocator,
 result: AssembledCode,
@@ -59,17 +55,16 @@ pub fn parse(
         .allocator = allocator,
         .result = .{
             .instructions = std.ArrayList(Instruction).init(allocator),
-            .memory = undefined,
-            .labels = undefined,
+            .constants = std.StringHashMap(i16).init(allocator),
+            .memory = std.ArrayList([]const u8).init(allocator),
+            .labels = std.StringHashMap(Label).init(allocator),
         },
         .tokens = tokens.items(.token),
         .locations = tokens.items(.location),
         .position = 0,
     };
 
-    const preprocess_result = try parser.preprocess(allocator);
-    parser.result.memory = preprocess_result.memory;
-    parser.result.labels = preprocess_result.labels;
+    try parser.preprocess(allocator);
 
     // We should only parse variable declarations
     // and instructions. Simple enough?
@@ -103,10 +98,6 @@ pub fn parse(
             .instruction_mnemonic => |_| {
                 try parser.parseInstruction();
             },
-            .identifier => |_| {
-                // TODO: parse a constant definition
-                _ = parser.next();
-            },
             .comment => {
                 _ = parser.next();
                 _ = parser.match(.newline);
@@ -130,14 +121,11 @@ pub fn parse(
 fn preprocess(
     self: *Self,
     allocator: std.mem.Allocator
-) !PreprocessResult {
+) !void {
     // After preprocessing the token stream,
     // go back to the beginning.
     defer self.position = 0;
 
-    var labels = std.StringHashMap(Label).init(allocator);
-    var memory = std.ArrayList([]const u8).init(allocator);
-    
     var next_token_is_under_label: ?[]const u8 = null;
     var instruction_pointer: u16 = 0;
     var memory_pointer: u16 = 0;
@@ -145,7 +133,7 @@ fn preprocess(
         switch (token) {
             .instruction_mnemonic => |_| {
                 if (next_token_is_under_label) |label_identifier| {
-                    try labels.put(label_identifier, Label{ .memory_field = memory_pointer });
+                    try self.result.labels.put(label_identifier, Label{ .memory_field = memory_pointer });
                 }
                 instruction_pointer += 1;
             },
@@ -203,7 +191,7 @@ fn preprocess(
                 }
                 
                 if (next_token_is_under_label) |label_identifier| {
-                    const bucket = try labels.getOrPut(label_identifier);
+                    const bucket = try self.result.labels.getOrPut(label_identifier);
                     if (bucket.found_existing) {
                         // TODO: Report duplicate label error
                         unreachable;
@@ -213,7 +201,7 @@ fn preprocess(
                 }
 
                 if (maybe_memory_field) |memory_field| {
-                    try memory.append(memory_field);
+                    try self.result.memory.append(memory_field);
                     memory_pointer += @as(u16, @intCast(memory_field.len));
                 }
             },
@@ -224,24 +212,62 @@ fn preprocess(
             }
         }
     }
-    
-    return PreprocessResult{
-        .labels = labels,
-        .memory = memory,
-    };
+
+    // Another pass, solely for constants. It is needed
+    // to allow using labels in constant definitions.
+    //
+    // It still doesn't really work if we're using constants
+    // inside other constants, which is super bad. That's why
+    // the greedy "text search & replace" approach I've been
+    // doing is bad. The binding needs to happen later. Anyway,
+    // I won't fix that right now.
+    self.position = 0;
+    while (self.next()) |token| {
+        switch (token) {
+            .identifier => |_| {
+                _ = self.prev();
+                try self.parseConstant();
+            },
+            else => continue,
+        }
+    }
+}
+
+fn parseConstant(self: *Self) !void {
+    const constant_name_token = self.next() orelse unreachable;
+    if (self.match(.equals_sign) == null) {
+        print("constant: {s}\n", .{constant_name_token.identifier});
+        // TODO: Report error
+        return;
+    }
+    const value = (try self.parseExpression()) orelse return; // TODO: Report error
+    switch (value) {
+        .register, .memory => {
+            print("Variable can only be an immediate, was: {}\n", .{value});
+        },
+        .immediate => |number| {
+            const bucket = try self.result.constants.getOrPut(constant_name_token.identifier);
+            if (bucket.found_existing) {
+                // TODO: Report duplicate constant error
+                unreachable;
+            } else {
+                bucket.value_ptr.* = number;
+            }
+        },
+    }
 }
 
 // TODO: Check the operands according to description
 fn parseInstruction(self: *Self) !void {
     const instruction_location = self.peekLocation();
-    const instruction_token = self.next() orelse return;
+    const instruction_token = self.next() orelse unreachable;
 
     const description = intel8088.isa.get(instruction_token.instruction_mnemonic);
 
     // I know that I am using an arena, so this is fast.
     var operands = try self.allocator.alloc(intel8088.InstructionOperand, description.allowed_operands.len);
     for (0 .. description.allowed_operands.len) |i| {
-        operands[i] = (try self.parseInstructionOperand()) orelse return;
+        operands[i] = (try self.parseExpression()) orelse return;
         if (i != description.allowed_operands.len - 1) {
             _ = self.match(.comma) orelse return;
         }
@@ -251,10 +277,6 @@ fn parseInstruction(self: *Self) !void {
         .operands = operands,
         .location = instruction_location,
     });
-}
-
-fn parseInstructionOperand(self: *Self) !?intel8088.InstructionOperand {
-    return try self.parseExpression();
 }
 
 fn parseExpression(self: *Self) !?intel8088.InstructionOperand {
@@ -285,12 +307,14 @@ fn parseExpression(self: *Self) !?intel8088.InstructionOperand {
         operands: std.ArrayList(ExpressionNode),
         operators: std.ArrayList(ExpressionNode),
         rewritten: std.ArrayList(ExpressionNode),
+        allocator: std.mem.Allocator,
 
         pub fn init(allocator: std.mem.Allocator) !@This() {
             return @This() {
                 .operands = std.ArrayList(ExpressionNode).init(allocator),
                 .operators = std.ArrayList(ExpressionNode).init(allocator),
                 .rewritten = std.ArrayList(ExpressionNode).init(allocator),
+                .allocator = allocator,
             };
         }
         
@@ -301,13 +325,13 @@ fn parseExpression(self: *Self) !?intel8088.InstructionOperand {
         }
 
         pub fn addOperand(p: *@This(), operand: intel8088.InstructionOperand) !void {
-            try p.operands.append(.{ .operand = operand });
+            try p.rewritten.append(.{ .operand = operand });
         }
         
         pub fn addOperator(p: *@This(), operator: ExpressionNode) !void {
             while (p.operators.getLastOrNull()) |last_operator| {
                 if (last_operator.priority() >= operator.priority()) {
-                    try p.addRewrittenBinaryExpression(p.operators.pop());
+                    try p.rewritten.append(p.operators.pop());
                 } else {
                     break;
                 }
@@ -316,25 +340,31 @@ fn parseExpression(self: *Self) !?intel8088.InstructionOperand {
         }
 
         pub fn evaluate(p: *@This()) !?intel8088.InstructionOperand {
-            if (p.operands.items.len == 1 and p.operators.items.len == 0) {
-                return p.operands.items[0].operand;
+            if (p.rewritten.items.len == 1) {
+                return p.rewritten.items[0].operand;
             }
-    
+            
             while (p.operators.popOrNull()) |last_operator| {
-                try p.addRewrittenBinaryExpression(last_operator);
+                try p.rewritten.append(last_operator);
+                //try p.addRewrittenBinaryExpression(last_operator);
             }
             if (p.operands.items.len > 0) {
                 // TODO: Report error
                 return null;
             }
-            if (p.operands.items.len > 0) {
-                return null;
+            print("\n\nHYPER:\n", .{});
+            for (p.rewritten.items) |op| {
+                print("{}\n", .{op});
             }
-            
-            var arg1: ?intel8088.InstructionOperand = null;
-            var arg2: ?intel8088.InstructionOperand = null;
+            print("\n\n", .{});
+
+            var stack = std.ArrayList(intel8088.InstructionOperand).init(p.allocator);
+            defer stack.deinit();
             for (p.rewritten.items) |node| {
                 if (node.isOperator()) {
+                    // Flipped, since stack is reversed
+                    const arg2 = stack.popOrNull();
+                    var arg1 = stack.popOrNull();
                     if (arg1 != null and arg2 != null) {
                         switch (node) {
                             // TODO: Overflow and other error checking
@@ -344,8 +374,9 @@ fn parseExpression(self: *Self) !?intel8088.InstructionOperand {
                             .div => arg1.?.immediate = @divFloor(arg1.?.immediate, arg2.?.immediate),
                             else => unreachable,
                         }
-                        arg2 = null;
+                        try stack.append(arg1.?);
                     } else {
+                        print("Bad expression\n", .{});
                         // TODO: Report error
                     }
                 } else switch (node.operand) {
@@ -356,21 +387,20 @@ fn parseExpression(self: *Self) !?intel8088.InstructionOperand {
                         // TODO: Report error
                     },
                     .immediate => {
-                        if (arg1 == null) {
-                            arg1 = node.operand;
-                        } else if (arg2 == null) {
-                            arg2 = node.operand;
-                        } else {
-                            // TODO: Report error
-                        }
+                        try stack.append(node.operand);
                     }
                 }
             }
-            
-            if (arg2 != null) {
+
+            const result = stack.popOrNull() orelse {
+                print("Bad expression\n", .{});
+                return null;
+            };
+            if (stack.items.len > 0) {
                 // TODO: Report error
             }
-            return arg1;
+            print("THE RESULT IS {any}\n", .{result});
+            return result;
         }
         
         fn addRewrittenBinaryExpression(p: *@This(), operator: ExpressionNode) !void {
@@ -402,6 +432,8 @@ fn parseExpression(self: *Self) !?intel8088.InstructionOperand {
                     // TODO: Accept labels to code
                     // TODO: Immediates should be evaluated in i32, for better error reporting
                     try polish.addOperand(.{ .immediate = @as(i16, @intCast(label.memory_field)) });
+                } else if (self.result.constants.get(identifier)) |value| {
+                    try polish.addOperand(.{ .immediate = value });
                 } else {
                     // TODO: Report error
                 }
@@ -665,6 +697,30 @@ test "parses bss section" {
 
         try testing.expectEqualSlices(Label, expected_labels, actual_labels);
         try testing.expectEqualDeep(expected_memory, assembled_program.memory.items);
+    }
+}
+
+test "constant declarations work" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    {
+        const source = Tokenizer.ProgramSourceCode{
+            .filepath = null,
+            .contents =
+                \\  _MY_VAR = 2
+                \\MOV   AX, _MY_VAR
+        };
+
+        const expected_instructions = &[_]Instruction{
+            .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .immediate = 2 } }, .location = .{ .line = 2, .column = 1 } },
+        };
+
+        const tokens = try Tokenizer.tokenize(source, &arena);
+        const assembled_program = try parse(tokens, arena.allocator());
+
+        try testing.expectEqualDeep(expected_instructions, assembled_program.instructions.items);
     }
 }
 
