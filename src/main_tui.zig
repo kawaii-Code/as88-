@@ -133,6 +133,7 @@ pub fn main() !void {
                     if (execution_history.popOrNull()) |previous_diffs| {
                         emulator.stepBack(&previous_diffs);
                         text_input.reset();
+                        current_line = emulator.currentLineInSourceFile() orelse current_line + 1;
                     }
                 } else if (key.matches(vaxis.Key.enter, .{})) {
                     const user_input = try text_input.toOwnedSlice();
@@ -143,7 +144,9 @@ pub fn main() !void {
                     } else {
                         if (try emulator.step()) |diffs| {
                             try execution_history.append(diffs);
+                            current_line = emulator.currentLineInSourceFile() orelse current_line + 1;
                         } else {
+                            // Program is done, exit main loop
                             break;
                         }
                     }
@@ -162,7 +165,6 @@ pub fn main() !void {
             },
             .winsize => |ws| try vx.resize(allocator, tty.anyWriter(), ws),
         }
-        current_line = emulator.currentLineInSourceFile() orelse current_line + 1;
 
         const root_window = vx.window();
 
@@ -355,10 +357,18 @@ pub fn main() !void {
         }
 
         for (tracked_vars.items, 0..) |tracked, i| {
-            const segment = plainTextSegment(tracked);
-            _ = try root_window.printSegment(segment, .{
-                .row_offset = command_window.y_off + command_window_height + 1 + i,
-            });
+            const buf = try render_arena.allocator().alloc(u8, register_window_width - 2);
+            @memset(buf, 0);
+            var stream = std.io.fixedBufferStream(buf);
+        
+            if (assembled_code.labels.get(tracked)) |label| {
+                const value_of_tracked = @as(u16, @bitCast(emulator.load(.{ .memory = label.memory_field })));
+                try std.fmt.format(stream.writer(), "{s}: {x:0>4}", .{tracked, value_of_tracked});
+                const track_segment = plainTextSegment(buf);
+                _ = try root_window.printSegment(track_segment, .{
+                    .row_offset = command_window.y_off + command_window_height + 1 + i,
+                });
+            }
         }
 
         var buffered = tty.bufferedWriter();

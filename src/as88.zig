@@ -1,5 +1,19 @@
+// Large TODO, in no particular order:
+//
+// - I use arenas everywhere, so, strictly speaking, I don't leak any memory.
+//   Reality is harsher, however, so improve memory management (at least for tui)
+// - Constant declarations are broken because of eager evaluation (see examples\constants.s)
+// - Review Emulator's naming
+// - Registers that share memory (e.g. AX and AH, AL) are handled with a crutch
+// - Turn examples into tests, for example, by comparing diffs
+// - Segments are not used
+// - Load program code into emulator's memory, so that IP will be accurate
+// - Store instruction execution times, so that we can measure performance of our assembly code
+// - Colorize error output
+// - Custom panic handler
+// - "Type check" instruction operands and sections
+
 const std = @import("std");
-const common = @import("common.zig");
 const print = std.debug.print;
 
 pub const intel8088 = @import("intel8088_cpu_description.zig");
