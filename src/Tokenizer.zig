@@ -27,10 +27,17 @@ pub const Token = union(enum) {
 
     none,
     comma,
+    semicolon,
+    newline,
+
     left_paren,
     right_paren,
-    newline,
-    semicolon,
+    
+    plus,
+    minus,
+    star,
+    forward_slash,
+    
     comment,
     label: []const u8,
     string: []const u8,
@@ -86,7 +93,15 @@ pub fn tokenize(
                 '(' => try tokenizer.addTokenAndNext(.left_paren),
                 ')' => try tokenizer.addTokenAndNext(.right_paren),
                 ';' => try tokenizer.addTokenAndNext(.semicolon),
-                '-', '0'...'9' => {
+                '+' => try tokenizer.addTokenAndNext(.plus),
+                '*' => try tokenizer.addTokenAndNext(.star),
+                '/' => try tokenizer.addTokenAndNext(.forward_slash),
+                '-', '0'...'9' => number: {
+                    if (c == '-' and !std.ascii.isDigit(tokenizer.peekN(1) orelse 'a')) {
+                        try tokenizer.addTokenAndNext(.minus);
+                        break :number;
+                    }
+                
                     const unparsed_number = tokenizer.skipWhile(isNumberChar);
                     if (std.fmt.parseInt(i16, unparsed_number, 0)) |number| {
                         try tokenizer.addToken(.{ .number = number });
@@ -231,7 +246,11 @@ fn next(self: *Self) ?u8 {
 }
 
 fn peek(self: *const Self) ?u8 {
-    return common.getOrNull(u8, self.line, self.position);
+    return self.peekN(0);
+}
+
+fn peekN(self: *const Self, n: usize) ?u8 {
+    return common.getOrNull(u8, self.line, self.position + n);
 }
 
 fn reportNote(self: *Self, comptime fmt: []const u8, args: anytype) void {
@@ -292,36 +311,36 @@ test "tokenize string literals" {
         const token = actual_tokens.items(.token)[0];
         try expectStringToken("Hello, World!\n", token);
     }
-
+    
     {
         const source = ProgramSourceCode{
             .filepath = null,
             .contents =
-                \\".SECT .TEXT MOV AX, BX;"
-                \\.SECT ".SECT"
+            \\".SECT .TEXT MOV AX, BX;"
+            \\.SECT ".SECT"
         };
         
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         var actual_tokens = try tokenize(source, &arena);
-
+        
         try expectStringToken(".SECT .TEXT MOV AX, BX;", actual_tokens.items(.token)[0]);
         try testing.expectEqual(Token.newline, actual_tokens.items(.token)[1]);
         try testing.expectEqual(Token{ .directive = .sect }, actual_tokens.items(.token)[2]);
         try expectStringToken(".SECT", actual_tokens.items(.token)[3]);
     }
-
-   {
+    
+    {
         const source = ProgramSourceCode{
             .filepath = null,
             .contents =
-                \\"\""
+            \\"\""
         };
         
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         var actual_tokens = try tokenize(source, &arena);
-
+        
         try expectStringToken("\"", actual_tokens.items(.token)[0]);
     }
     
@@ -382,6 +401,41 @@ test "tokenize simple source file" {
     var actual_tokens = try tokenize(source, &arena);
 
     try testing.expectEqualSlices(Token, &expected_tokens, actual_tokens.items(.token));
+}
+
+test "tokenizes a compound expression" {
+    const allocator = std.testing.allocator;
+    const source = ProgramSourceCode{
+        .filepath = null,
+        .contents = 
+            // This won't compile, but makes a good tokenizer test
+            \\MOV AX - 2 / 2, 3 * 5 + (my_label)
+    };
+    const expected_tokens = [_]Token {
+        .{ .instruction_mnemonic = .mov },
+        .{ .register = .ax },
+        .minus,
+        .{ .number = 2 },
+        .forward_slash,
+        .{ .number = 2 },
+        .comma,
+        
+        .{ .number = 3 },
+        .star,
+        .{ .number = 5 },
+        .plus,
+        .left_paren,
+        .{ .identifier = "my_label" },
+        .right_paren,
+        
+        .newline,
+    };
+    
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var actual_tokens = try tokenize(source, &arena);
+
+    try testing.expectEqualDeep(&expected_tokens, actual_tokens.items(.token));
 }
 
 fn expectStringToken(expected: []const u8, token: Token) anyerror!void {

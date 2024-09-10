@@ -94,7 +94,7 @@ pub fn parse(
                     }
                     _ = parser.next();
                 } else {
-                    if (!directive.isMemory()) {
+                    if (!directive.isMemoryDataType()) {
                         print("didn't expect directive '{}'\n", .{directive});
                     }
                     _ = parser.next();
@@ -241,7 +241,7 @@ fn parseInstruction(self: *Self) !void {
     // I know that I am using an arena, so this is fast.
     var operands = try self.allocator.alloc(intel8088.InstructionOperand, description.allowed_operands.len);
     for (0 .. description.allowed_operands.len) |i| {
-        operands[i] = self.parseInstructionOperand() orelse return;
+        operands[i] = (try self.parseInstructionOperand()) orelse return;
         if (i != description.allowed_operands.len - 1) {
             _ = self.match(.comma) orelse return;
         }
@@ -253,30 +253,185 @@ fn parseInstruction(self: *Self) !void {
     });
 }
 
-fn parseInstructionOperand(self: *Self) ?intel8088.InstructionOperand {
-    if (self.next()) |token| {
-        switch (token) {
-            .number => {
-                return .{ .immediate = token.number };
-            },
-            .register => {
-                return .{ .register = token.register };
-            },
-            .left_paren => {
-                const label_token = self.match(.identifier) orelse return null;
-                _ = self.match(.right_paren) orelse return null;
-                if (self.result.labels.get(label_token.identifier)) |label| {
-                    // TODO: Accept labels to code
-                    return .{ .memory = label.memory_field };
+fn parseInstructionOperand(self: *Self) !?intel8088.InstructionOperand {
+    return try self.parseExpression();
+}
+
+fn parseExpression(self: *Self) !?intel8088.InstructionOperand {
+    const ExpressionNode = union(enum) {
+        add,
+        sub,
+        mul,
+        div,
+        operand: intel8088.InstructionOperand,
+
+        pub fn isOperator(node: @This()) bool {
+            return switch (node) {
+                .add, .sub, .mul, .div => true,
+                .operand => false,
+            };
+        }
+
+        pub fn priority(node: @This()) u16 {
+            return switch (node) {
+                .add, .sub => 0,
+                .mul, .div => 1,
+                else => unreachable,
+            };
+        }
+    };
+    
+    const ReversePolishEvaluator = struct {
+        operands: std.ArrayList(ExpressionNode),
+        operators: std.ArrayList(ExpressionNode),
+        rewritten: std.ArrayList(ExpressionNode),
+
+        pub fn init(allocator: std.mem.Allocator) !@This() {
+            return @This() {
+                .operands = std.ArrayList(ExpressionNode).init(allocator),
+                .operators = std.ArrayList(ExpressionNode).init(allocator),
+                .rewritten = std.ArrayList(ExpressionNode).init(allocator),
+            };
+        }
+        
+        pub fn deinit(p: *@This()) void {
+            p.operands.deinit();
+            p.operators.deinit();
+            p.rewritten.deinit();
+        }
+
+        pub fn addOperand(p: *@This(), operand: intel8088.InstructionOperand) !void {
+            try p.operands.append(.{ .operand = operand });
+        }
+        
+        pub fn addOperator(p: *@This(), operator: ExpressionNode) !void {
+            while (p.operators.getLastOrNull()) |last_operator| {
+                if (last_operator.priority() >= operator.priority()) {
+                    try p.addRewrittenBinaryExpression(p.operators.pop());
                 } else {
-                    // Also could be a register or an immediate
-                    unreachable;
+                    break;
                 }
-            },
-            else => {
+            }
+            try p.operators.append(operator);
+        }
+
+        pub fn evaluate(p: *@This()) !?intel8088.InstructionOperand {
+            if (p.operands.items.len == 1 and p.operators.items.len == 0) {
+                return p.operands.items[0].operand;
+            }
+    
+            while (p.operators.popOrNull()) |last_operator| {
+                try p.addRewrittenBinaryExpression(last_operator);
+            }
+            if (p.operands.items.len > 0) {
                 // TODO: Report error
                 return null;
             }
+            if (p.operands.items.len > 0) {
+                return null;
+            }
+            
+            var arg1: ?intel8088.InstructionOperand = null;
+            var arg2: ?intel8088.InstructionOperand = null;
+            for (p.rewritten.items) |node| {
+                if (node.isOperator()) {
+                    if (arg1 != null and arg2 != null) {
+                        switch (node) {
+                            // TODO: Overflow and other error checking
+                            .add => arg1.?.immediate += arg2.?.immediate,
+                            .sub => arg1.?.immediate -= arg2.?.immediate,
+                            .mul => arg1.?.immediate *= arg2.?.immediate,
+                            .div => arg1.?.immediate = @divFloor(arg1.?.immediate, arg2.?.immediate),
+                            else => unreachable,
+                        }
+                        arg2 = null;
+                    } else {
+                        // TODO: Report error
+                    }
+                } else switch (node.operand) {
+                    .memory => {
+                        // TODO: Report error
+                    },
+                    .register => {
+                        // TODO: Report error
+                    },
+                    .immediate => {
+                        if (arg1 == null) {
+                            arg1 = node.operand;
+                        } else if (arg2 == null) {
+                            arg2 = node.operand;
+                        } else {
+                            // TODO: Report error
+                        }
+                    }
+                }
+            }
+            
+            if (arg2 != null) {
+                // TODO: Report error
+            }
+            return arg1;
+        }
+        
+        fn addRewrittenBinaryExpression(p: *@This(), operator: ExpressionNode) !void {
+            const arg1 = p.operands.popOrNull() orelse {
+                // TODO: Report error
+                return;
+            };
+            const arg2 = p.operands.popOrNull();
+            if (arg2 != null) {
+                try p.rewritten.append(arg2.?);
+            }
+            try p.rewritten.append(arg1);
+            try p.rewritten.append(operator);
+        }
+    };
+    
+    var polish = try ReversePolishEvaluator.init(self.allocator);
+    defer polish.deinit();
+    while (self.next()) |token| {
+        switch (token) {
+            .number => |number| try polish.addOperand(.{ .immediate = number }),
+            .plus => try polish.addOperator(.add),
+            .minus => try polish.addOperator(.sub),
+            .star => try polish.addOperator(.mul),
+            .forward_slash => try polish.addOperator(.div),
+            .register => |register| try polish.addOperand(.{ .register = register }),
+            .identifier => |identifier| {
+                if (self.result.labels.get(identifier)) |label| {
+                    // TODO: Accept labels to code
+                    // TODO: Immediates should be evaluated in i32, for better error reporting
+                    try polish.addOperand(.{ .immediate = @as(i16, @intCast(label.memory_field)) });
+                } else {
+                    // TODO: Report error
+                }
+            },
+            .left_paren => {
+                const nested_memory_operand = try self.parseExpression() orelse return null;
+                if (self.match(.right_paren)) |_| {
+                    switch (nested_memory_operand) {
+                        .immediate => |address| try polish.addOperand(.{ .memory = @as(u16, @intCast(address)) }),
+                        else => {
+                            // TODO: Report unsupported type
+                            print("Memory must be an immediate, found {}", .{nested_memory_operand});
+                            return null;
+                        }
+                    }
+                } else {
+                    // TODO: Report unclosed parentheses
+                }
+            },
+            // On any other token, we assume that the expression ended
+            // and it's time to evaluate it.
+            else => {
+                // Go 1 token back, since we skipped one token right after the expression end.
+                _ = self.prev();
+
+                if (try polish.evaluate()) |result| {
+                    return result;
+                }
+                return null;
+            },
         }
     }
     // TODO: Report error
@@ -299,6 +454,12 @@ fn match(self: *Self, expected: Token.Tag) ?Token {
 fn next(self: *Self) ?Token {
     const result = self.peek();
     self.position = @min(self.position + 1, self.tokens.len);
+    return result;
+}
+
+fn prev(self: *Self) ?Token {
+    const result = self.peek();
+    self.position = @max(self.position - 1, 0);
     return result;
 }
 
@@ -353,7 +514,7 @@ test "parses text section" {
     }
 }
  
-test "parser compound expression" {
+test "parses compound expression" {
     const shared_beginning = ".SECT .TEXT\n";
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -374,6 +535,36 @@ test "parser compound expression" {
         const assembled_program = try parse(tokens, arena.allocator());
 
         try testing.expectEqualDeep(expected_instructions, assembled_program.instructions.items);
+    }
+    
+    {
+        const source = Tokenizer.ProgramSourceCode{
+            .filepath = null,
+            .contents = shared_beginning ++
+                \\! Calculates length, excluding the zero terminator of the string "Hello"
+                \\MOV AX, after_hello - hello - 1
+                \\.SECT .DATA
+                \\hello: .ASCIZ "Hello"
+                \\after_hello: .WORD 0
+        };
+        
+        const expected_labels = &[_]Label {
+            .{ .memory_field = 0 },
+            .{ .memory_field = 6 },
+        };
+        const expected_instructions: []const Instruction = &.{
+            .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .immediate = 5 } }, .location = .{ .line = 3, .column = 1 } },
+            //                                                                                ^^^^^^^^ :( I don't want this
+        };
+        
+        const tokens = try Tokenizer.tokenize(source, &arena);
+        const assembled_program = try parse(tokens, arena.allocator());
+        
+        const actual_labels = collectLabelsToOwnedSlice(&assembled_program.labels, allocator);
+        defer allocator.free(actual_labels);
+
+        try testing.expectEqualSlices(Label, expected_labels, actual_labels);
+        try testing.expectEqualDeep(expected_instructions[0], assembled_program.instructions.items[0]);
     }
 }
 

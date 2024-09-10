@@ -139,13 +139,6 @@ pub const asm_syntax = struct {
                 else => false,
             };
         }
-    
-        pub fn isMemory(self: @This()) bool {
-            return switch (self) {
-                .word, .space => true,
-                else => false,
-            };
-        }
     };
 };
 
