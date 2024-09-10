@@ -57,7 +57,11 @@ pub fn deinit(self: *@This()) void {
 }
 
 pub fn step(self: *@This()) !?std.ArrayList(Diff) {
-    const instruction = self.currentInstruction();
+    if (self.instruction_pointer >= self.instructions.len) {
+        return null;
+    }
+    
+    const instruction = self.currentInstruction() orelse unreachable;
 
     const op1 = common.getOrNull(intel8088.InstructionOperand, instruction.operands, 0);
     const op2 = common.getOrNull(intel8088.InstructionOperand, instruction.operands, 1);
@@ -69,22 +73,26 @@ pub fn step(self: *@This()) !?std.ArrayList(Diff) {
         .sub => try self.store(op1.?, self.load(op1.?) - self.load(op2.?), &diffs),
     }
     
-    print("------ DIFFS ----------\n", .{});
-    for (diffs.items) |diff| {
-        print("{}\n", .{diff});
-    }
-    print("-----------------------\n", .{});
+    //print("------ DIFFS ----------\n", .{});
+    //for (diffs.items) |diff| {
+    //    print("{}\n", .{diff});
+    //}
+    //print("-----------------------\n", .{});
     
     self.instruction_pointer += 1;
-    if (self.instruction_pointer >= self.instructions.len) {
-        return null;
-    }
-    
     return diffs;
 }
 
-pub fn currentLineInSourceFile(self: *const @This()) usize {
-    return self.currentInstruction().location.line;
+pub fn stepBack(self: *@This(), diffs: *const std.ArrayList(Diff)) void {
+    std.debug.assert(self.instruction_pointer != 0);
+    for (diffs.items) |diff| {
+        self.revert(diff);
+    }
+    self.instruction_pointer -= 1;
+}
+
+pub fn currentLineInSourceFile(self: *const @This()) ?usize {
+    return (self.currentInstruction() orelse return null).location.line;
 }
 
 pub fn load(self: *const @This(), operand: intel8088.InstructionOperand) i16 {
@@ -179,6 +187,9 @@ fn write(self: *@This(), location: MachineLocation, value: i16) void {
     }
 }
 
-fn currentInstruction(self: *const @This()) Parser.Instruction {
-    return self.instructions[self.instruction_pointer];
+fn currentInstruction(self: *const @This()) ?Parser.Instruction {
+    if (self.instruction_pointer < self.instructions.len) {
+        return self.instructions[self.instruction_pointer];
+    }
+    return null;
 }

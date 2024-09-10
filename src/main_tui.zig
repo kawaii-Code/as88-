@@ -115,33 +115,43 @@ pub fn main() !void {
     };
 
     var previous_commands = PreviousCommandsBuffer.init();
-    var current_line: usize = emulator.currentLineInSourceFile();
-    
+    var current_line: usize = emulator.currentLineInSourceFile() orelse unreachable;
+
+    var execution_history = std.ArrayList(std.ArrayList(as88.Emulator.Diff)).init(allocator);
+    defer execution_history.deinit();
+
+    var tracked_vars = std.ArrayList([]const u8).init(allocator);
+    defer tracked_vars.deinit();
+
     var text_input = TextInput.init(arena.allocator(), &vx.unicode);
     defer text_input.deinit();
-    var program_ends_at_next_event: bool = false;
     while (true) {
         const event = loop.nextEvent();
-        if (program_ends_at_next_event) {
-            break;
-        }
-
         switch (event) {
             .key_press => |key| {
-                if (key.matches(vaxis.Key.enter, .{})) {
+                if (key.matches(vaxis.Key.enter, .{ .shift = true })) {
+                    if (execution_history.popOrNull()) |previous_diffs| {
+                        emulator.stepBack(&previous_diffs);
+                        text_input.reset();
+                    }
+                } else if (key.matches(vaxis.Key.enter, .{})) {
                     const user_input = try text_input.toOwnedSlice();
                     if (std.mem.eql(u8, user_input, "q")) {
                         break;
+                    } else if (std.mem.startsWith(u8, user_input, "/")) {
+                        try tracked_vars.append(user_input[1..]);
+                    } else {
+                        if (try emulator.step()) |diffs| {
+                            try execution_history.append(diffs);
+                        } else {
+                            break;
+                        }
                     }
 
-                    const program_done = (try emulator.step()) == null;
-                    if (program_done) {
-                        program_ends_at_next_event = true;
-                    } else {
-                        current_line = emulator.currentLineInSourceFile();
+                    if (user_input.len > 0) {
+                        previous_commands.add(user_input);
+                        text_input.reset();
                     }
-                    previous_commands.add(user_input);
-                    text_input.reset();
                 } else if (key.matches('c', .{ .ctrl = true })) {
                     break;
                 } else if (key.matches('l', .{ .ctrl = true })) {
@@ -152,6 +162,7 @@ pub fn main() !void {
             },
             .winsize => |ws| try vx.resize(allocator, tty.anyWriter(), ws),
         }
+        current_line = emulator.currentLineInSourceFile() orelse current_line + 1;
 
         const root_window = vx.window();
 
@@ -211,8 +222,8 @@ pub fn main() !void {
                     column += 1;
                 }
             }
-            root_window.writeCell(code_window.x_off - 1, current_line - top_line, .{ .char = .{ .grapheme = "=" }, .style = border_style });
-            root_window.writeCell(code_window.x_off, current_line - top_line, .{ .char = .{ .grapheme = ">" }, .style = border_style });
+            root_window.writeCell(code_window.x_off - 1, current_line - top_line - 1, .{ .char = .{ .grapheme = "=" }, .style = border_style });
+            root_window.writeCell(code_window.x_off, current_line - top_line - 1, .{ .char = .{ .grapheme = ">" }, .style = border_style });
         }
 
         const command_window = root_window.child(.{
@@ -341,6 +352,13 @@ pub fn main() !void {
             const di = @as(u16, @bitCast(emulator.registers.get(.di)));
             try std.fmt.format(stream.writer(), "DI: {x:0>4} .TEXT+0     ", .{di});
             registers.drawLine(stream.buffer);
+        }
+
+        for (tracked_vars.items, 0..) |tracked, i| {
+            const segment = plainTextSegment(tracked);
+            _ = try root_window.printSegment(segment, .{
+                .row_offset = command_window.y_off + command_window_height + 1 + i,
+            });
         }
 
         var buffered = tty.bufferedWriter();
