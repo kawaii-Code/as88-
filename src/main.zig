@@ -31,11 +31,11 @@ pub fn main() !void {
     
     var emulator = try as88.Emulator.init(arena.allocator(), assembled_code);
     defer emulator.deinit();
-    print("{}\n\n", .{emulator.cpu});
-    while (emulator.step()) {
-        print("{}\n\n", .{emulator.cpu});
+    print("{}\n\n", .{emulator});
+    while (try emulator.step()) |_| {
+        print("{}\n\n", .{emulator});
     }
-    print("{}\n\n", .{emulator.cpu});
+    print("{}\n\n", .{emulator});
 }
 
 

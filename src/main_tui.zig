@@ -115,7 +115,7 @@ pub fn main() !void {
         switch (event) {
             .key_press => |key| {
                 if (key.matches(vaxis.Key.enter, .{})) {
-                    const program_done = emulator.step() == false;
+                    const program_done = (try emulator.step()) == null;
                     if (program_done) {
                         break;
                     } else {

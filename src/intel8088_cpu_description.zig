@@ -9,23 +9,14 @@ pub const InstructionMnemonic = enum {
     sub,
 };
 
+pub const InstructionOperand = union(enum) {
+    immediate: i16,
+    register: Register,
+    memory: u16,
+};
+
 pub const Register = enum {
     pub const Names = common.EnumMemberNamesToStrings(@This()).init();
-
-    //pub const @"16 Wide" = init: {
-    //    const values = std.enums.values(@This());
-    //    var result: [values.len - @"8 Wide".len] = undefined;
-    //    var result_index: usize = 0;
-    //    for (values) |value| {
-    //        if (!value.is8bit()) {
-    //            result[result_index] = value;
-    //            result_index += 1;
-    //        }
-    //    }
-    //    break :init result;
-    //};
-
-    //pub const @"8 Wide" = [8]@This(){ .ah, .al, .bh, .bl, .ch, .cl, .dh, .dl };
 
     // General purpose registers
     ax,  ah, al,
@@ -48,11 +39,46 @@ pub const Register = enum {
     // Instruction pointer
     ip,
 
-    pub fn is8bit(self: @This()) bool {
+    pub fn is8Bit(self: @This()) bool {
         return switch (self) {
             .ah, .al, .bh, .bl,
             .ch, .cl, .dh, .dl => true,
             else => false,
+        };
+    }
+    
+    pub fn parent(self: @This()) Register {
+        return switch (self) {
+            .ah, .al => .ax,
+            .bh, .bl => .bx,
+            .ch, .cl => .cx,
+            .dh, .dl => .dx,
+            else => unreachable,
+        };
+    }
+
+    pub fn has8BitChildren(self: @This()) bool {
+        return switch (self) {
+            .ax, .bx, .cx, .dx => true,
+            else => false,
+        };
+    }
+    
+    pub fn children(self: @This()) [2]Register {
+        return switch (self) {
+            .ax => .{ .ah, .al },
+            .bx => .{ .bh, .bl },
+            .cx => .{ .ch, .cl },
+            .dx => .{ .dh, .dl },
+            else => unreachable,
+        };
+    }
+
+    pub fn isLow(self: @This()) bool {
+        return switch(self) {
+            .al, .bl, .cl, .dl => true,
+            .ah, .bh, .ch, .dh => false,
+            else => unreachable,
         };
     }
 };
@@ -60,37 +86,6 @@ pub const Register = enum {
 pub const Flag = enum {
     tf, df, @"if",
     of, sf, zf, af, pf, cf,  
-};
-
-pub const InstructionOperand = union(enum) {
-    immediate: i16,
-    register: Register,
-    memory: u16,
-};
-
-pub const CPU = struct {
-    // Let's assume that the CPU has a RAM chip inserted in it :)
-    memory: []u8,
-    // TODO: This won't work when AX, AL, etc. are introduced,
-    // since they share values.
-    registers: std.EnumArray(Register, i16),
-    flags: std.EnumArray(Flag, bool),
-
-    pub fn load(self: *const @This(), operand: InstructionOperand) i16 {
-        return switch (operand) {
-            .immediate => |value| value,
-            .register => |r| self.registers.get(r),
-            .memory => |address| self.memory[address],
-        };
-    }
-
-    pub fn store(self: *@This(), operand: InstructionOperand, value: i16) void {
-        switch (operand) {
-            .immediate => unreachable,
-            .register => |r| self.registers.set(r, value),
-            .memory => |address| std.mem.writeInt(i16, self.memory[address .. address + 2][0..2], value, .little),
-        }
-    }
 };
 
 pub const InstructionDescription = struct {
