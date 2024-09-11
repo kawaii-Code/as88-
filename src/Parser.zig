@@ -66,13 +66,12 @@ pub fn parse(
 
     try parser.preprocess(allocator);
 
-    // We should only parse variable declarations
-    // and instructions. Simple enough?
     var parser_state: ParseState = .no_section;
     while (parser.peek()) |token| {
         switch (token) {
             .directive => |directive| {
                 if (directive == .sect) {
+                    _ = parser.next();
                     if (parser.match(.directive)) |next_directive| {
                         if (next_directive.directive.isSectionType()) {
                             parser_state = switch(next_directive.directive) {
@@ -83,9 +82,11 @@ pub fn parse(
                            };
                         } else {
                             // TODO: Report error
+                            unreachable;
                         }
                     } else {
                         // TODO: Report error
+                        unreachable;
                     }
                     _ = parser.next();
                 } else {
@@ -106,7 +107,6 @@ pub fn parse(
                 _ = parser.next();
             },
             else => {
-                //print("didn't expect token: {}\n", .{token});
                 _ = parser.next();
             },
         }
@@ -129,11 +129,21 @@ fn preprocess(
     var next_token_is_under_label: ?[]const u8 = null;
     var instruction_pointer: u16 = 0;
     var memory_pointer: u16 = 0;
-    while (self.next()) |token| : (next_token_is_under_label = if (token.is(.label)) token.label else null) {
+    while (self.next()) |token| : ({
+        if (!token.isWhitespace()) {
+            next_token_is_under_label = if (token.is(.label)) token.label else null;
+        }
+    }) {
         switch (token) {
             .instruction_mnemonic => |_| {
                 if (next_token_is_under_label) |label_identifier| {
-                    try self.result.labels.put(label_identifier, Label{ .memory_field = memory_pointer });
+                    const bucket = try self.result.labels.getOrPut(label_identifier);
+                    if (bucket.found_existing) {
+                        // TODO: Report duplicate label error
+                        unreachable;
+                    } else {
+                        bucket.value_ptr.* = Label{ .instruction = instruction_pointer };
+                    }
                 }
                 instruction_pointer += 1;
             },
@@ -150,10 +160,7 @@ fn preprocess(
                             if (next_token.number >= 0) {
                                 // TODO: Check that number is not negatvie
                                 maybe_memory_field = try allocator.alloc(u8, @as(usize, @intCast(next_token.number)));
-                                for (0 .. maybe_memory_field.?.len) |i| {
-                                    // How to zero init?
-                                    maybe_memory_field.?[i] = 0;
-                                }
+                                @memset(maybe_memory_field.?, 0);
                             } else {
                                 // TODO: Report error
                             }
@@ -235,25 +242,27 @@ fn preprocess(
 
 fn parseConstant(self: *Self) !void {
     const constant_name_token = self.next() orelse unreachable;
-    if (self.match(.equals_sign) == null) {
-        print("constant: {s}\n", .{constant_name_token.identifier});
-        // TODO: Report error
-        return;
-    }
-    const value = (try self.parseExpression()) orelse return; // TODO: Report error
-    switch (value) {
-        .register, .memory => {
-            print("Variable can only be an immediate, was: {}\n", .{value});
-        },
-        .immediate => |number| {
-            const bucket = try self.result.constants.getOrPut(constant_name_token.identifier);
-            if (bucket.found_existing) {
-                // TODO: Report duplicate constant error
-                unreachable;
-            } else {
-                bucket.value_ptr.* = number;
-            }
-        },
+    if (self.next()) |equals_token| {
+        if (equals_token != .equals_sign) {
+            // TODO: Report error
+            return;
+        }
+
+        const value = (try self.parseExpression()) orelse return; // TODO: Report error
+        switch (value) {
+            .register, .memory => {
+                print("Variable can only be an immediate, was: {}\n", .{value});
+            },
+            .immediate => |number| {
+                const bucket = try self.result.constants.getOrPut(constant_name_token.identifier);
+                if (bucket.found_existing) {
+                    // TODO: Report duplicate constant error
+                    unreachable;
+                } else {
+                    bucket.value_ptr.* = number;
+                }
+            },
+        }
     }
 }
 
@@ -352,11 +361,6 @@ fn parseExpression(self: *Self) !?intel8088.InstructionOperand {
                 // TODO: Report error
                 return null;
             }
-            print("\n\nHYPER:\n", .{});
-            for (p.rewritten.items) |op| {
-                print("{}\n", .{op});
-            }
-            print("\n\n", .{});
 
             var stack = std.ArrayList(intel8088.InstructionOperand).init(p.allocator);
             defer stack.deinit();
@@ -429,13 +433,17 @@ fn parseExpression(self: *Self) !?intel8088.InstructionOperand {
             .register => |register| try polish.addOperand(.{ .register = register }),
             .identifier => |identifier| {
                 if (self.result.labels.get(identifier)) |label| {
-                    // TODO: Accept labels to code
                     // TODO: Immediates should be evaluated in i32, for better error reporting
-                    try polish.addOperand(.{ .immediate = @as(i16, @intCast(label.memory_field)) });
+                    const label_value = switch (label) {
+                        .memory_field => |memory_field| @as(i16, @intCast(memory_field)),
+                        .instruction => |instruction| @as(i16, @intCast(instruction)),
+                    };
+                    try polish.addOperand(.{ .immediate = label_value });
                 } else if (self.result.constants.get(identifier)) |value| {
                     try polish.addOperand(.{ .immediate = value });
                 } else {
                     // TODO: Report error
+                    unreachable;
                 }
             },
             .left_paren => {

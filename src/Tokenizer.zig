@@ -51,6 +51,13 @@ pub const Token = union(enum) {
     pub fn is(self: @This(), tag: Tag) bool {
         return self == tag;
     }
+
+    pub fn isWhitespace(self: @This()) bool {
+        return switch (self) {
+            .newline, .comment => true,
+            else => false,
+        };
+    }
 };
 
 

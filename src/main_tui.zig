@@ -123,6 +123,8 @@ pub fn main() !void {
     var tracked_vars = std.ArrayList([]const u8).init(allocator);
     defer tracked_vars.deinit();
 
+    try vx.resize(allocator, tty.anyWriter(), .{ .rows = 20, .cols = 20, .x_pixel = 0, .y_pixel = 0 });
+
     var text_input = TextInput.init(arena.allocator(), &vx.unicode);
     defer text_input.deinit();
     while (true) {

@@ -4,9 +4,18 @@ const common = @import("common.zig");
 pub const InstructionMnemonic = enum {
     pub const Names = common.EnumMemberNamesToStrings(@This()).init();
 
+    nop,
     mov,
+    loop,
+    push,
+    pop,
+
     add,
+    inc,
     sub,
+    dec,
+    neg,
+    cmp,
 };
 
 pub const InstructionOperand = union(enum) {
@@ -101,8 +110,16 @@ pub const AllowedOperands = std.EnumSet(enum {
 // That's a comptime generated array, which is a bit crazy.
 pub const isa = std.EnumArray(InstructionMnemonic, InstructionDescription).init(.{
     .mov = .{ .allowed_operands = &.{ memOrReg(), memOrRegOrImm() } },
+    .loop = .{ .allowed_operands = &.{ memOrRegOrImm() } },
     .add = .{ .allowed_operands = &.{ memOrReg(), memOrRegOrImm() } },
+    .inc = .{ .allowed_operands = &.{ memOrReg() } },
     .sub = .{ .allowed_operands = &.{ memOrReg(), memOrRegOrImm() } },
+    .dec = .{ .allowed_operands = &.{ memOrReg() } },
+    .neg = .{ .allowed_operands = &.{ memOrReg() } },
+    .cmp = .{ .allowed_operands = &.{ memOrRegOrImm(), memOrRegOrImm() } },
+    .push = .{ .allowed_operands = &.{ memOrRegOrImm() } },
+    .pop = .{ .allowed_operands = &.{ memOrReg() } },
+    .nop = .{ .allowed_operands = &.{} },
 });
 
 pub const asm_syntax = struct {

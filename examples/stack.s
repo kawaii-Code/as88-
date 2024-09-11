@@ -1,0 +1,11 @@
+.SECT .TEXT
+    MOV AX, 3
+	PUSH AX
+    ADD AX, 5
+	PUSH AX
+    POP BX
+    POP CX
+
+.SECT .DATA
+
+.SECT .BSS
