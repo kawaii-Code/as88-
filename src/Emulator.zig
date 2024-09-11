@@ -87,10 +87,10 @@ pub fn step(self: *@This()) !?std.ArrayList(Diff) {
         .push => {
             try self.store(.{ .memory = @as(u16, @bitCast(self.registers.get(.sp))) }, self.load(op1.?), diffs);
             // Not really how sp works
-            self.registers.set(.sp, self.registers.get(.sp) + 2);
+            try self.store(.{ .register = .sp }, self.load(.{ .register = .sp }) + 2, diffs);
         },
         .pop => {
-            self.registers.set(.sp, self.registers.get(.sp) - 2);
+            try self.store(.{ .register = .sp }, self.load(.{ .register = .sp }) - 2, diffs);
             try self.store(op1.?, self.load(.{ .memory = @as(u16, @bitCast(self.registers.get(.sp)))}), diffs);
         },
         
@@ -142,8 +142,6 @@ pub fn step(self: *@This()) !?std.ArrayList(Diff) {
             try self.storeFlag(.zf, sub_result[0] == 0, diffs);
             try self.storeFlag(.pf, @popCount(sub_result[0]) % 2 == 0, diffs);
         },
-        
-        
     }
     
     //print("------ DIFFS ----------\n", .{});

@@ -15,51 +15,19 @@ const Event = union(enum) {
     winsize: vaxis.Winsize,
 };
 
+const default_style     = vaxis.Style{};
+const border_style      = vaxis.Style{ .fg = .{ .index = 8 } };
+const comment_style     = border_style;
+const instruction_style = vaxis.Style{ .fg = .{ .index = 9 } };
+const section_style     = vaxis.Style{ .fg = .{ .index = 10 } };
+const immediate_style   = vaxis.Style{ .fg = .{ .index = 13 } };
+const register_style    = vaxis.Style{ .fg = .{ .index = 12 } };
+
 const register_window_width = 25;
 const register_window_height = 10;
 const command_window_width = register_window_width - 2;
 const command_window_height = 6;
-
 const code_window_height = register_window_height;
-
-pub const PreviousCommandsBuffer = struct {
-    pub const Size = command_window_height - 2;
-
-    buffer: [Size][]const u8,
-
-    pub fn init() @This() {
-        var result = @This() { .buffer = undefined };
-        for (0 .. Size) |i| {
-            // Creepy, but this code doesn't matter in the slightest
-            result.buffer[i] = "";
-        }
-        return result;
-    }
-
-    pub fn add(self: *@This(), command: []const u8) void {
-        for (1 .. Size) |i| {
-            self.buffer[i - 1] = self.buffer[i];
-        }
-        self.buffer[Size - 1] = command;
-    }
-};
-
-// I am being lazy here, so this is a little inefficient.
-// But then again, who cares?
-fn splitToLinesAlloc(source_text: []const u8, allocator: std.mem.Allocator) ![][]const u8 {
-    const line_count = std.mem.count(u8, source_text, "\n");
-    var result = try allocator.alloc([]const u8, line_count + 1);
-
-    var line_it = std.mem.splitScalar(u8, source_text, '\n');
-    var i: usize = 0;
-    while (line_it.next()) |line| {
-        const line_copy = try allocator.dupe(u8, line);
-        result[i] = line_copy;
-        i += 1;
-    }
-    
-    return result;
-}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -109,11 +77,6 @@ pub fn main() !void {
 
     try vx.enterAltScreen(tty.anyWriter());
     try vx.queryTerminal(tty.anyWriter(), 1 * std.time.ns_per_s);
-
-    const border_style = vaxis.Style {
-        .fg = .{ .index = 0 },
-    };
-
     var previous_commands = PreviousCommandsBuffer.init();
     var current_line: usize = emulator.currentLineInSourceFile() orelse unreachable;
 
@@ -131,13 +94,13 @@ pub fn main() !void {
         const event = loop.nextEvent();
         switch (event) {
             .key_press => |key| {
-                if (key.matches(vaxis.Key.enter, .{ .shift = true })) {
+                if (key.matches(vaxis.Key.up, .{})) {
                     if (execution_history.popOrNull()) |previous_diffs| {
                         emulator.stepBack(&previous_diffs);
                         text_input.reset();
                         current_line = emulator.currentLineInSourceFile() orelse current_line + 1;
                     }
-                } else if (key.matches(vaxis.Key.enter, .{})) {
+                } else if (key.matches(vaxis.Key.enter, .{}) or key.matches(vaxis.Key.down, .{})) {
                     const user_input = try text_input.toOwnedSlice();
                     if (std.mem.eql(u8, user_input, "q")) {
                         break;
@@ -203,7 +166,6 @@ pub fn main() !void {
                 var token_it = std.mem.tokenizeAny(u8, line, " \t");
                 while (token_it.next()) |token| {
                     if (std.mem.startsWith(u8, token, "!")) {
-                        const comment_style = border_style;
                         const segment = vaxis.Segment { .text = line[column - 1 .. line.len], .style = comment_style, .link = .{} };
                         _ = try code_window.printSegment(segment, .{
                             .row_offset = j,
@@ -213,7 +175,6 @@ pub fn main() !void {
                     }
                 
                     const style = highlightFor(token);
-
                     const segment = vaxis.Segment { .text = token, .style = style, .link = .{} };
                     const print_result = try code_window.printSegment(segment, .{
                         .row_offset = j,
@@ -386,26 +347,61 @@ pub fn main() !void {
     }
 }
 
+pub const PreviousCommandsBuffer = struct {
+    pub const Size = command_window_height - 2;
+
+    buffer: [Size][]const u8,
+
+    pub fn init() @This() {
+        var result = @This() { .buffer = undefined };
+        for (0 .. Size) |i| {
+            // Creepy, but this code doesn't matter in the slightest
+            result.buffer[i] = "";
+        }
+        return result;
+    }
+
+    pub fn add(self: *@This(), command: []const u8) void {
+        for (1 .. Size) |i| {
+            self.buffer[i - 1] = self.buffer[i];
+        }
+        self.buffer[Size - 1] = command;
+    }
+};
+
+fn splitToLinesAlloc(source_text: []const u8, allocator: std.mem.Allocator) ![][]const u8 {
+    const line_count = std.mem.count(u8, source_text, "\n");
+    var result = try allocator.alloc([]const u8, line_count + 1);
+
+    var line_it = std.mem.splitScalar(u8, source_text, '\n');
+    var i: usize = 0;
+    while (line_it.next()) |line| {
+        const line_copy = try allocator.dupe(u8, line);
+        result[i] = line_copy;
+        i += 1;
+    }
+    
+    return result;
+}
+
 fn highlightFor(token: []const u8) vaxis.Style {
     if (std.mem.startsWith(u8, token, ".")) {
-        return .{ .fg = .{ .index = 3 } };
+        return section_style;
     } else if (intel8088.Register.Names.find(token)) |_| {
-        return .{ .fg = .{ .index = 4 } };
+        return register_style;
     } else if (intel8088.InstructionMnemonic.Names.find(token)) |_| {
-        return .{ .fg = .{ .index = 5 } };
-    } else if (std.ascii.isDigit(token[0]) or
-               (token.len > 1 and (token[0] == '-') and std.ascii.isDigit(token[1]))
-    ) {
-        return .{ .fg = .{ .index = 6 } };
+        return instruction_style;
+    } else if (std.ascii.isDigit(token[0]) or (token.len > 1 and (token[0] == '-') and std.ascii.isDigit(token[1]))) {
+        return immediate_style;
     } else {
-        return .{};
+        return default_style;
     } 
 }
 
 fn plainTextSegment(text: []const u8) vaxis.Segment {
     return .{
         .text = text,
-        .style = .{},
+        .style = default_style,
         .link = .{},
     };
 }
