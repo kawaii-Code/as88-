@@ -333,13 +333,20 @@ pub fn main() !void {
         {
             var stream = try registers.lineStream();
             const sp = @as(u16, @bitCast(emulator.registers.get(.sp)));
-            try std.fmt.format(stream.writer(), "SP: {x:0>4} TODO: Flags ", .{sp});
+            try std.fmt.format(stream.writer(), "SP: {x:0>4} SF O D S Z C", .{sp});
             registers.drawLine(stream.buffer);
         }
         {
             var stream = try registers.lineStream();
             const bp = @as(u16, @bitCast(emulator.registers.get(.bp)));
-            try std.fmt.format(stream.writer(), "BP: {x:0>4} TODO: What? ", .{bp});
+            const of: u8 = if (emulator.flags.get(.of)) 'v' else '-';
+            const df: u8 = if (emulator.flags.get(.df)) '<' else '>';
+            const sf: u8 = if (emulator.flags.get(.sf)) 'n' else 'p';
+            const zf: u8 = if (emulator.flags.get(.zf)) 'z' else '-';
+            const cf: u8 = if (emulator.flags.get(.cf)) '?' else '-';
+            try std.fmt.format(stream.writer(), "BP: {x:0>4} CC {c} {c} {c} {c} {c}", .{
+                bp, of, df, sf, zf, cf
+            });
             registers.drawLine(stream.buffer);
         }
         {
