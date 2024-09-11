@@ -1,10 +1,10 @@
 .SECT .TEXT
-    MOV AX, 3
+	MOV AX, 3
 	PUSH AX
-    ADD AX, 5
+	ADD AX, 5
 	PUSH AX
-    POP BX
-    POP CX
+	POP BX	! BX = 8
+	POP CX	! CX = 3
 
 .SECT .DATA
 

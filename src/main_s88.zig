@@ -38,10 +38,3 @@ pub fn main() !void {
     }
     //print("{}\n\n", .{emulator});
 }
-
-
-test {
-    _ = @import("Tokenizer.zig");
-    _ = @import("Parser.zig");
-    _ = @import("as88.zig");
-}

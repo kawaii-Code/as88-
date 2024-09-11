@@ -74,7 +74,7 @@ pub fn build(b: *std.Build) void {
     }
 
     const lib_as88_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = b.path("src/tests.zig"),
         .target = target,
         .optimize = optimize,
     });

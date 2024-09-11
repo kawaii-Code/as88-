@@ -1,0 +1,13 @@
+.SECT .TEXT
+	MOV	CX, 3
+L1:
+	ADD	BX, 5
+	ADD	(x), BX
+	LOOP L1
+
+	MOV AX, (x)
+
+.SECT .DATA
+
+.SECT .BSS
+x:	.SPACE	2

@@ -1,11 +1,7 @@
-! 1: AX = 0
-! 2: AX = 0
-! 3: AX = 3
-
 .SECT .TEXT
-	MOV AX, (x)
-	ADD (x), 3
-	ADD AX, (x)
+	MOV AX, (x)	! AX = 0
+	ADD (x), 3	! x = 3
+	ADD AX, (x)	! AX = 3
 
 .SECT .DATA
 
