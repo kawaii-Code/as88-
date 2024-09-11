@@ -10,7 +10,6 @@ registers: std.EnumArray(intel8088.Register, i16),
 flags: std.EnumArray(intel8088.Flag, bool),
 
 instructions: []const Parser.Instruction,
-instruction_pointer: usize,
 allocator: std.mem.Allocator,
 
 pub const LogicalAddress = struct {
@@ -41,6 +40,7 @@ pub fn init(allocator: std.mem.Allocator, assembled_code: Parser.AssembledCode) 
     }
 
     var registers = std.EnumArray(intel8088.Register, i16).initFill(0);
+    registers.set(.sp, 32);
     registers.set(.ss, 1);
     registers.set(.ds, 1);
     registers.set(.es, 1);
@@ -51,8 +51,6 @@ pub fn init(allocator: std.mem.Allocator, assembled_code: Parser.AssembledCode) 
         .flags = std.EnumArray(intel8088.Flag, bool).initFill(false),
 
         .instructions = assembled_code.instructions.items,
-        // TODO: This is a register
-        .instruction_pointer = 0,
         .allocator = allocator,
     };
 }
@@ -62,36 +60,40 @@ pub fn deinit(self: *@This()) void {
 }
 
 pub fn step(self: *@This()) !?std.ArrayList(Diff) {
-    if (self.instruction_pointer >= self.instructions.len) {
+    const maybe_instruction = self.currentInstruction();
+    if (maybe_instruction == null) {
         return null;
     }
-    
-    const instruction = self.currentInstruction() orelse unreachable;
+    const instruction = maybe_instruction.?;
 
     const op1 = common.getOrNull(intel8088.InstructionOperand, instruction.operands, 0);
     const op2 = common.getOrNull(intel8088.InstructionOperand, instruction.operands, 1);
 
     var diffs_actual = std.ArrayList(Diff).init(self.allocator);
     const diffs = &diffs_actual;
-    
-    self.instruction_pointer += 1;
+
+    var did_jump = false;
     switch (instruction.mnemonic) {
         .nop => {},
         .mov => try self.store(op1.?, self.load(op2.?), diffs),
         .loop => {
             try self.store(.{ .register = .cx }, self.registers.get(.cx) - 1, diffs);
             if (self.registers.get(.cx) > 0) {
-                self.instruction_pointer = @as(usize, @intCast(self.load(op1.?)));
+                try self.store(.{ .register = .ip }, self.load(op1.?), diffs);
+                did_jump = true;
             }
         },
         .push => {
+            try self.store(.{ .register = .sp }, self.load(.{ .register = .sp }) - 2, diffs);
             try self.store(.{ .memory = @as(u16, @bitCast(self.registers.get(.sp))) }, self.load(op1.?), diffs);
-            // Not really how sp works
-            try self.store(.{ .register = .sp }, self.load(.{ .register = .sp }) + 2, diffs);
         },
         .pop => {
-            try self.store(.{ .register = .sp }, self.load(.{ .register = .sp }) - 2, diffs);
             try self.store(op1.?, self.load(.{ .memory = @as(u16, @bitCast(self.registers.get(.sp)))}), diffs);
+            try self.store(.{ .register = .sp }, self.load(.{ .register = .sp }) + 2, diffs);
+        },
+        .sys => {
+            const syscall_index = self.loadFromStack(0);
+            try self.doSyscall(@as(u16, @bitCast(syscall_index)));
         },
         
         ////////////////////////
@@ -134,7 +136,7 @@ pub fn step(self: *@This()) !?std.ArrayList(Diff) {
         },
         .cmp => {
             try self.resetFlags(diffs);
-            const sub_result = @subWithOverflow(self.load(op1.?), self.load(op2.?));
+            const sub_result = @subWithOverflow(self.load(op1.?), self.load(.{ .register = .ax }));
             if (sub_result[1] != 0) {
                 try self.storeFlag(.of, true, diffs);
             }
@@ -142,23 +144,49 @@ pub fn step(self: *@This()) !?std.ArrayList(Diff) {
             try self.storeFlag(.zf, sub_result[0] == 0, diffs);
             try self.storeFlag(.pf, @popCount(sub_result[0]) % 2 == 0, diffs);
         },
+        .mul, .imul => {
+            // TODO: IMUL
+            // MUL doesn't do anything with flags
+            try self.resetFlags(diffs);
+            const op1_32 = @as(u32, @intCast(@as(u16, @bitCast(self.load(.{ .register = .ax })))));
+            const op2_32 = @as(u32, @intCast(@as(u16, @bitCast(self.load(op1.?)))));
+            const mul_result = op1_32 * op2_32;
+            // Those casts...
+            try self.store(.{ .register = .dx }, @as(i16, @bitCast(@as(u16, @intCast(@shrExact(mul_result & 0xFFFF0000, 16))))), diffs);
+            try self.store(.{ .register = .ax }, @as(i16, @bitCast(@as(u16, @intCast(mul_result & 0x0000FFFF)))), diffs);
+        },
+        .div, .idiv => {
+            const ax = @as(u32, @intCast(@as(u16, @bitCast(self.load(.{ .register = .ax })))));
+            const dx = @as(u32, @intCast(@as(u16, @bitCast(self.load(.{ .register = .dx })))));
+
+            const dividend = @shlExact(dx, 16) | ax;
+            const divisor = @as(u32, @intCast(@as(u16, @bitCast(self.load(op1.?)))));
+
+            const quotient = std.math.divTrunc(u32, dividend, divisor) catch std.debug.panic("division by 0\n", .{});
+            const remainder = @rem(dividend, divisor);
+
+            try self.store(.{ .register = .ax }, @as(i16, @bitCast(@as(u16, @intCast(quotient)))), diffs);
+            try self.store(.{ .register = .dx }, @as(i16, @bitCast(@as(u16, @intCast(remainder)))), diffs);
+        },
+        .cwd => {
+            const ax = @as(u16, @bitCast(self.load(.{ .register = .ax })))  ;
+            const extended_sign_bit = if (ax & 0x8000 == 0) std.bit_set.IntegerBitSet(16).initEmpty() else std.bit_set.IntegerBitSet(16).initFull();
+            try self.store(.{ .register = .dx }, @as(i16, @bitCast(extended_sign_bit.mask)), diffs);
+        },
     }
     
-    //print("------ DIFFS ----------\n", .{});
-    //for (diffs.items) |diff| {
-    //    print("{}\n", .{diff});
-    //}
-    //print("-----------------------\n", .{});
+    if (!did_jump) {
+        try self.store(.{ .register = .ip }, self.load(.{ .register = .ip }) + 1, diffs);
+    }
     
     return diffs_actual;
 }
 
 pub fn stepBack(self: *@This(), diffs: *const std.ArrayList(Diff)) void {
-    std.debug.assert(self.instruction_pointer != 0);
+    std.debug.assert(self.registers.get(.ip) != 0);
     for (diffs.items) |diff| {
         self.revert(diff);
     }
-    self.instruction_pointer -= 1;
 }
 
 pub fn currentLineInSourceFile(self: *const @This()) ?usize {
@@ -174,6 +202,42 @@ pub fn load(self: *const @This(), operand: intel8088.InstructionOperand) i16 {
             return std.mem.bytesAsValue(i16, self.memory[address .. address + 2]).*;
         },
     };
+}
+
+const sys_exit = 1;
+const sys_write = 4;
+const sys_getchar = 117;
+const fd_stdout = 1;
+
+pub fn loadFromStack(self: *@This(), offset: u16) i16 {
+    const stack_top = @as(u16, @bitCast(self.load(.{ .register = .sp })));
+    return self.load(.{ .memory = stack_top + offset });
+}
+
+pub fn doSyscall(self: *@This(), syscall_number: usize) !void {
+    switch (syscall_number) {
+        sys_exit => {
+            const exit_code = @as(u16, @bitCast(self.loadFromStack(2)));
+            std.process.exit(@as(u8, @intCast(exit_code)));
+        },
+        sys_write => {
+            const fd = self.loadFromStack(2);
+            const string_ptr = @as(u16, @bitCast(self.loadFromStack(4)));
+            const string_length = @as(u16, @bitCast(self.loadFromStack(6)));
+
+            const string = self.memory[string_ptr .. string_ptr + string_length];
+            
+            if (fd == fd_stdout) {
+                const stdout = std.io.getStdOut().writer();
+                try stdout.print("{s}", .{string});
+            } else {
+                std.debug.panic("can't write to fd {}\n", .{fd});
+            }
+        },
+        else => {
+            std.debug.panic("no syscall {}\n", .{syscall_number});
+        },
+    }
 }
 
 pub fn add(self: *@This(), destination: intel8088.InstructionOperand, value: i16, diffs: *std.ArrayList(Diff)) !void {
@@ -294,8 +358,9 @@ fn write(self: *@This(), location: MachineLocation, value: i16) void {
 }
 
 fn currentInstruction(self: *const @This()) ?Parser.Instruction {
-    if (self.instruction_pointer < self.instructions.len) {
-        return self.instructions[self.instruction_pointer];
+    const ip = @as(u16, @bitCast(self.load(.{ .register = .ip })));
+    if (ip < self.instructions.len) {
+        return self.instructions[ip];
     }
     return null;
 }

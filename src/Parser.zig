@@ -177,6 +177,13 @@ fn preprocess(
                     } else {
                         // TODO: Report error
                     }
+                } else if (directive == .byte) {
+                    if (self.match(.number)) |number_token| {
+                        maybe_memory_field = try allocator.alloc(u8, 1);
+                        maybe_memory_field.?[0] = @as(u8, @intCast(number_token.number));
+                    } else {
+                        // TODO: Report error
+                    }
                 } else if (directive == .ascii or directive == .asciz) {
                     if (self.match(.string)) |string_token| {
                         if (directive == .asciz) {
@@ -403,7 +410,6 @@ fn parseExpression(self: *Self) !?intel8088.InstructionOperand {
             if (stack.items.len > 0) {
                 // TODO: Report error
             }
-            print("THE RESULT IS {any}\n", .{result});
             return result;
         }
         
@@ -443,7 +449,7 @@ fn parseExpression(self: *Self) !?intel8088.InstructionOperand {
                     try polish.addOperand(.{ .immediate = value });
                 } else {
                     // TODO: Report error
-                    unreachable;
+                    std.debug.panic("undeclared identifier '{s}'\n", .{identifier});
                 }
             },
             .left_paren => {

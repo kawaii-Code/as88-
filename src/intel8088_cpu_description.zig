@@ -9,6 +9,7 @@ pub const InstructionMnemonic = enum {
     loop,
     push,
     pop,
+    sys,
 
     add,
     inc,
@@ -16,6 +17,12 @@ pub const InstructionMnemonic = enum {
     dec,
     neg,
     cmp,
+    mul,
+    imul,
+    div,
+    idiv,
+    
+    cwd,
 };
 
 pub const InstructionOperand = union(enum) {
@@ -98,7 +105,7 @@ pub const Flag = enum {
 };
 
 pub const InstructionDescription = struct {
-    allowed_operands: []const AllowedOperands,
+    allowed_operands: []const AllowedOperands = &.{},
 };
 
 pub const AllowedOperands = std.EnumSet(enum {
@@ -111,15 +118,24 @@ pub const AllowedOperands = std.EnumSet(enum {
 pub const isa = std.EnumArray(InstructionMnemonic, InstructionDescription).init(.{
     .mov = .{ .allowed_operands = &.{ memOrReg(), memOrRegOrImm() } },
     .loop = .{ .allowed_operands = &.{ memOrRegOrImm() } },
+    
     .add = .{ .allowed_operands = &.{ memOrReg(), memOrRegOrImm() } },
     .inc = .{ .allowed_operands = &.{ memOrReg() } },
     .sub = .{ .allowed_operands = &.{ memOrReg(), memOrRegOrImm() } },
     .dec = .{ .allowed_operands = &.{ memOrReg() } },
     .neg = .{ .allowed_operands = &.{ memOrReg() } },
     .cmp = .{ .allowed_operands = &.{ memOrRegOrImm(), memOrRegOrImm() } },
+    .mul = .{ .allowed_operands = &.{ memOrRegOrImm() } },
+    .imul = .{ .allowed_operands = &.{ memOrRegOrImm() } },
+    .div = .{ .allowed_operands = &.{ memOrRegOrImm() } },
+    .idiv = .{ .allowed_operands = &.{ memOrRegOrImm() } },
+    
+    .cwd = .{ },
+    
     .push = .{ .allowed_operands = &.{ memOrRegOrImm() } },
     .pop = .{ .allowed_operands = &.{ memOrReg() } },
-    .nop = .{ .allowed_operands = &.{} },
+    .nop = .{ },
+    .sys = .{ },
 });
 
 pub const asm_syntax = struct {
@@ -131,6 +147,7 @@ pub const asm_syntax = struct {
         ascii,
         asciz,
         space,
+        byte,
 
         // Sections
         sect,
@@ -140,7 +157,7 @@ pub const asm_syntax = struct {
 
         pub fn isMemoryDataType(self: @This()) bool {
             return switch (self) {
-                .word, .ascii,. asciz, .space => true,
+                .word, .ascii,. asciz, .space, .byte => true,
                 .sect, .text, .data, .bss => false,
             };
         }

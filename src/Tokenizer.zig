@@ -85,7 +85,7 @@ pub fn tokenize(
         .tokens = std.MultiArrayList(TokenWithLocation) {},
     };
 
-    var line_it = std.mem.tokenizeAny(u8, source.contents, "\n");
+    var line_it = std.mem.splitScalar(u8, source.contents, '\n');
     while (line_it.next()) |line| : (tokenizer.location.line += 1) {
         tokenizer.line = line;
         tokenizer.location.column = 1;

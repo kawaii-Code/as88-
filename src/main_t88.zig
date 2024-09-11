@@ -161,6 +161,10 @@ pub fn main() !void {
             const bottom_line = @min(top_line + code_window_height, source_code_lines.len - 1);
             for (top_line .. bottom_line, 0 ..) |i, j| {
                 const line = source_code_lines[i];
+                if (i == current_line) {
+                    root_window.writeCell(code_window.x_off - 1, code_window.y_off + j - 1, .{ .char = .{ .grapheme = "=" }, .style = border_style });
+                    root_window.writeCell(code_window.x_off, code_window.y_off + j - 1, .{ .char = .{ .grapheme = ">" }, .style = border_style });
+                }
 
                 var column: usize = 1;
                 var token_it = std.mem.tokenizeAny(u8, line, " \t");
@@ -173,7 +177,7 @@ pub fn main() !void {
                         });
                         break;
                     }
-                
+                    // TODO: Handle wrapping
                     const style = highlightFor(token);
                     const segment = vaxis.Segment { .text = token, .style = style, .link = .{} };
                     const print_result = try code_window.printSegment(segment, .{
@@ -187,8 +191,6 @@ pub fn main() !void {
                     column += 1;
                 }
             }
-            root_window.writeCell(code_window.x_off - 1, current_line - top_line - 1, .{ .char = .{ .grapheme = "=" }, .style = border_style });
-            root_window.writeCell(code_window.x_off, current_line - top_line - 1, .{ .char = .{ .grapheme = ">" }, .style = border_style });
         }
 
         const command_window = root_window.child(.{
