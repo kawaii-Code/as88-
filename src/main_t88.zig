@@ -13,7 +13,8 @@ const Event = union(enum) {
     winsize: vaxis.Winsize,
 };
 
-const border_connector_north_east_west = "┬";
+const border_connector_south_east_west = "┬";
+const border_connector_north_east_west = "┴";
 
 const default_style     = vaxis.Style{};
 const border_style      = vaxis.Style{ .fg = .{ .index = 8 } };
@@ -25,8 +26,11 @@ const register_style    = vaxis.Style{ .fg = .{ .index = 12 } };
 
 const register_window_width = 25;
 const register_window_height = 10;
+const stack_window_width = 5;
+const stack_window_height = register_window_height;
 const command_window_width = register_window_width - 2;
 const command_window_height = 6;
+const code_window_x = register_window_width + stack_window_width;
 const code_window_height = register_window_height;
 
 const RunningProgram = struct {
@@ -38,8 +42,8 @@ const RunningProgram = struct {
     source_lines: [][]const u8,
 
     pub fn init(assembled_code: as88.AssembledCode, program_source: []const u8, allocator: std.mem.Allocator) !@This() {
-        var result = RunningProgram{
-            .history = RunningProgram.ExecutionHistory.init(allocator),
+        var result = @This(){
+            .history = @This().ExecutionHistory.init(allocator),
             .emulator = try as88.Emulator.init(allocator, assembled_code),
             .line_in_source = 0,
             .source_lines = try splitToLinesAlloc(program_source, allocator),
@@ -125,9 +129,6 @@ pub fn main() !void {
 
     var previous_commands = PreviousCommandsBuffer.init();
 
-    var execution_history = std.ArrayList(std.ArrayList(as88.Emulator.Diff)).init(allocator);
-    defer execution_history.deinit();
-
     var tracked_vars = std.ArrayList([]const u8).init(allocator);
     defer tracked_vars.deinit();
 
@@ -184,90 +185,7 @@ pub fn main() !void {
                .style = border_style,
            },
         });
-        
-        {
-            const weird_middle_pad = 6;
-            const code_window = root_window.child(.{
-                .x_off = register_window_width + weird_middle_pad,
-                .y_off = 0,
-                .width = .expand,
-                .height = .{ .limit = code_window_height },
-                .border = .{
-                    .where = .{ .other = .{ .left = true, .bottom = true } },
-                    .style = border_style,
-                },
-            });
-            const top_line = std.math.sub(usize, program.line_in_source + 2, code_window_height) catch 0;
-            const bottom_line = @min(top_line + code_window_height, program.source_lines.len - 1);
-            for (top_line .. bottom_line, 0 ..) |i, j| {
-                const line = program.source_lines[i];
-                if (i == program.line_in_source) {
-                    root_window.writeCell(code_window.x_off - 1, code_window.y_off + j - 1, .{ .char = .{ .grapheme = "=" }, .style = border_style });
-                    root_window.writeCell(code_window.x_off, code_window.y_off + j - 1, .{ .char = .{ .grapheme = ">" }, .style = border_style });
-                }
-
-                var column: usize = 1;
-                var token_it = std.mem.tokenizeAny(u8, line, " \t");
-                while (token_it.next()) |token| {
-                    if (std.mem.startsWith(u8, token, "!")) {
-                        const segment = vaxis.Segment { .text = line[column - 1 .. line.len], .style = comment_style, .link = .{} };
-                        _ = try code_window.printSegment(segment, .{
-                            .row_offset = j,
-                            .col_offset = column,
-                        });
-                        break;
-                    }
-                    // TODO: Handle wrapping
-                    const style = highlightFor(token);
-                    const segment = vaxis.Segment { .text = token, .style = style, .link = .{} };
-                    const print_result = try code_window.printSegment(segment, .{
-                        .row_offset = j,
-                        .col_offset = column,
-                    });
-                    if (print_result.overflow) {
-                        break;
-                    }
-                    column = print_result.col;
-                    column += 1;
-                }
-            }
-        }
-
-        const command_window = root_window.child(.{
-            .x_off = 0,
-            .y_off = register_window_height,
-            .width =  .{ .limit = command_window_width },
-            .height = .{ .limit = command_window_height },
-            .border = .{
-                .where = .{ .other = .{ .right = true, .bottom = true } },
-                .style = border_style,
-            },
-        });
-        for (previous_commands.buffer, 0..) |command, i| {
-            const segment = plainTextSegment(command);
-            _ = try command_window.printSegment(segment, .{
-                .row_offset = i,
-                .wrap = .none,
-            });
-        }
-        
-        const command_prompt = command_window.child(.{
-            .x_off = 0,
-            .y_off = command_window_height - 2,
-            .width = .expand,
-            .height = .expand,
-        });
-        text_input.draw(command_prompt);
-        
-        // Write a window connector. Would be interesting
-        // if vaxis did it.
-        root_window.writeCell(
-            command_window_width - 1,
-            register_window_height - 1,
-            .{ .char = .{ .grapheme = border_connector_north_east_west }, .style = border_style }
-        );
-
-        const RegisterWindow = struct {
+        const LinePrinter = struct {
             window: vaxis.Window,
             line: usize,
             allocator: std.mem.Allocator,
@@ -290,7 +208,7 @@ pub fn main() !void {
         };
 
         _ = render_arena.reset(.retain_capacity);
-        var registers = RegisterWindow {
+        var registers = LinePrinter {
             .window = register_window,
             .line = 0,
             .allocator = render_arena.allocator(),
@@ -369,20 +287,147 @@ pub fn main() !void {
             try std.fmt.format(stream.writer(), "DI: {x:0>4} .TEXT+0     ", .{di});
             registers.drawLine(stream.buffer);
         }
-
-        for (tracked_vars.items, 0..) |tracked, i| {
-            const buf = try render_arena.allocator().alloc(u8, register_window_width - 2);
-            @memset(buf, 0);
-            var stream = std.io.fixedBufferStream(buf);
         
-            if (assembled_code.labels.get(tracked)) |label| {
-                const value_of_tracked = @as(u16, @bitCast(program.emulator.load(.{ .memory = label.memory_field })));
-                try std.fmt.format(stream.writer(), "{s}: {d}", .{tracked, value_of_tracked});
-                const track_segment = plainTextSegment(buf);
-                _ = try root_window.printSegment(track_segment, .{
-                    .row_offset = command_window.y_off + command_window_height + 1 + i,
-                    .wrap = .none,
-                });
+        // Draw stack window
+        {
+            const stack_window = root_window.child(.{
+                .x_off = register_window_width,
+                .y_off = 0,
+                .width =  .{ .limit = stack_window_width },
+                .height = .{ .limit = stack_window_height },
+                .border = .{ .style = border_style, .where = .bottom },
+            });
+
+            var line_printer = LinePrinter {
+                .window = stack_window,
+                .line = 0,
+                .allocator = render_arena.allocator(),
+            };
+            var stack_top: u16 = 32;
+            const sp = @as(u16, @bitCast(program.emulator.load(.{ .register = .sp })));
+            for (0 .. stack_window_height - 1) |_| {
+                stack_top -= 2;
+                const value = @as(u16, @bitCast(program.emulator.load(.{ .memory = stack_top })));
+                var stream = try line_printer.lineStream();
+                try std.fmt.format(stream.writer(), "{x:0>4}", .{value});
+                line_printer.drawLine(stream.buffer);
+                if (sp - 2 == stack_top) {
+                    // Draw arrow
+                    root_window.writeCell(stack_window.x_off - 1, stack_window.y_off + line_printer.line - 1, .{ .char = .{ .grapheme = "=" }, .style = border_style });
+                    root_window.writeCell(stack_window.x_off,     stack_window.y_off + line_printer.line - 1, .{ .char = .{ .grapheme = ">" }, .style = border_style });
+                }
+            }
+        }
+
+        // Draw code window
+        {
+            const code_window = root_window.child(.{
+                .x_off = code_window_x,
+                .y_off = 0,
+                .width = .expand,
+                .height = .{ .limit = code_window_height },
+                .border = .{
+                    .where = .{ .other = .{ .left = true, .bottom = true } },
+                    .style = border_style,
+                },
+            });
+            const top_line = std.math.sub(usize, program.line_in_source + 2, code_window_height) catch 0;
+            const bottom_line = @min(top_line + code_window_height, program.source_lines.len - 1);
+            for (top_line .. bottom_line, 0 ..) |i, j| {
+                const line = program.source_lines[i];
+                if (i == program.line_in_source) {
+                    root_window.writeCell(code_window.x_off - 1, code_window.y_off + j - 1, .{ .char = .{ .grapheme = "=" }, .style = border_style });
+                    root_window.writeCell(code_window.x_off, code_window.y_off + j - 1, .{ .char = .{ .grapheme = ">" }, .style = border_style });
+                }
+
+                var column: usize = 1;
+                var token_it = std.mem.tokenizeAny(u8, line, " \t");
+                while (token_it.next()) |token| {
+                    if (std.mem.startsWith(u8, token, "!")) {
+                        const segment = vaxis.Segment { .text = line[column - 1 .. line.len], .style = comment_style, .link = .{} };
+                        _ = try code_window.printSegment(segment, .{
+                            .row_offset = j,
+                            .col_offset = column,
+                        });
+                        break;
+                    }
+                    // TODO: Handle wrapping
+                    const style = highlightFor(token);
+                    const segment = vaxis.Segment { .text = token, .style = style, .link = .{} };
+                    const print_result = try code_window.printSegment(segment, .{
+                        .row_offset = j,
+                        .col_offset = column,
+                    });
+                    if (print_result.overflow) {
+                        break;
+                    }
+                    column = print_result.col;
+                    column += 1;
+                }
+            }
+        }
+        
+        const command_window = root_window.child(.{
+            .x_off = 0,
+            .y_off = register_window_height,
+            .width =  .{ .limit = command_window_width },
+            .height = .{ .limit = command_window_height },
+            .border = .{
+                .where = .{ .other = .{ .right = true, .bottom = true } },
+                .style = border_style,
+            },
+        });
+        for (previous_commands.buffer, 0..) |command, i| {
+            const segment = plainTextSegment(command);
+            _ = try command_window.printSegment(segment, .{
+                .row_offset = i,
+                .wrap = .none,
+            });
+        }
+        const command_prompt = command_window.child(.{
+            .x_off = 0,
+            .y_off = command_window_height - 2,
+            .width = .expand,
+            .height = .expand,
+        });
+        text_input.draw(command_prompt);
+        
+        // Write window connectors for prettiness. Would be interesting
+        // if vaxis did it.
+        root_window.writeCell(
+            command_window_width - 1,
+            register_window_height - 1,
+            .{ .char = .{ .grapheme = border_connector_south_east_west }, .style = border_style }
+        );
+        root_window.writeCell(
+            register_window_width - 1,
+            register_window_height - 1,
+            .{ .char = .{ .grapheme = border_connector_north_east_west }, .style = border_style }
+        );
+        root_window.writeCell(
+            register_window_width + stack_window_width,
+            register_window_height - 1,
+            .{ .char = .{ .grapheme = border_connector_north_east_west }, .style = border_style }
+        );
+
+
+
+        // Draw tracked variables
+        {
+            for (tracked_vars.items, 0..) |tracked, i| {
+                const buf = try render_arena.allocator().alloc(u8, register_window_width - 2);
+                @memset(buf, 0);
+                var stream = std.io.fixedBufferStream(buf);
+            
+                if (assembled_code.labels.get(tracked)) |label| {
+                    const value_of_tracked = @as(u16, @bitCast(program.emulator.load(.{ .memory = label.memory_field })));
+                    try std.fmt.format(stream.writer(), "{s}: {d}", .{tracked, value_of_tracked});
+                    const track_segment = plainTextSegment(buf);
+                    _ = try root_window.printSegment(track_segment, .{
+                        .row_offset = command_window.y_off + command_window_height + 1 + i,
+                        .wrap = .none,
+                    });
+                }
             }
         }
 
