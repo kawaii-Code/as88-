@@ -10,7 +10,7 @@ const SourceLocation = Tokenizer.SourceLocation;
 
 const Self = @This();
 
-pub const AssembledCode = struct {
+pub const AssembledProgram = struct {
     instructions: std.ArrayList(Instruction),
     memory: std.ArrayList([]const u8),
     labels: std.StringHashMap(Label),
@@ -41,7 +41,7 @@ const ParseState = enum {
 
 
 allocator: std.mem.Allocator,
-result: AssembledCode,
+result: AssembledProgram,
 tokens: []Token,
 locations: []SourceLocation,
 position: usize,
@@ -50,7 +50,7 @@ position: usize,
 pub fn parse(
     tokens: std.MultiArrayList(Tokenizer.TokenWithLocation),
     allocator: std.mem.Allocator
-) !AssembledCode {
+) !AssembledProgram {
     var parser = Self{
         .allocator = allocator,
         .result = .{

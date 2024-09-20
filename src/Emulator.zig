@@ -29,7 +29,7 @@ pub const Diff = struct {
     location: MachineLocation,
 };
 
-pub fn init(allocator: std.mem.Allocator, assembled_code: Parser.AssembledCode) !@This() {
+pub fn init(allocator: std.mem.Allocator, assembled_code: Parser.AssembledProgram) !@This() {
     // TODO: This should be 1 megabyte
     const memory = try allocator.alloc(u8, 32);
     var memory_index: u32 = 0;

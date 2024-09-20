@@ -21,13 +21,13 @@ pub const Tokenizer = @import("Tokenizer.zig");
 pub const Parser = @import("Parser.zig");
 pub const Emulator = @import("Emulator.zig");
 
-pub const AssembledCode = Parser.AssembledCode;
+pub const AssembledProgram = Parser.AssembledProgram;
 pub const ProgramSourceCode = Tokenizer.ProgramSourceCode;
 
 pub fn assemble(
     source: ProgramSourceCode,
     arena: *std.heap.ArenaAllocator
-) !Parser.AssembledCode {
+) !AssembledProgram {
     const tokens = try Tokenizer.tokenize(source, arena);
     //for (0 .. tokens.slice().len) |i| {
     //    const token = tokens.get(i);
