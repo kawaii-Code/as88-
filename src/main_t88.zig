@@ -560,7 +560,9 @@ fn FixedAppendOnlyQueue(comptime T: type, comptime size: usize) type {
         }
         
         pub fn append(self: *@This(), item: T) void {
-            std.mem.copyBackwards(T, &self.buffer, self.buffer[1..]);
+            for (1 .. size) |i| {
+                self.buffer[i - 1] = self.buffer[i];
+            }
             self.buffer[size - 1] = item;
         }
     };
