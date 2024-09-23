@@ -8,6 +8,8 @@ const print = std.debug.print;
 memory: []u8,
 registers: std.EnumArray(intel8088.Register, i16),
 flags: std.EnumArray(intel8088.Flag, bool),
+latest_stdout: ?[]const u8,
+running_interactively: bool,
 
 instructions: []const Parser.Instruction,
 allocator: std.mem.Allocator,
@@ -50,6 +52,8 @@ pub fn init(allocator: std.mem.Allocator, assembled_code: Parser.AssembledProgra
         .registers = registers,
         .flags = std.EnumArray(intel8088.Flag, bool).initFill(false),
 
+        .latest_stdout = null,
+        .running_interactively = false,
         .instructions = assembled_code.instructions.items,
         .allocator = allocator,
     };
@@ -228,8 +232,17 @@ pub fn doSyscall(self: *@This(), syscall_number: usize) !void {
             const string = self.memory[string_ptr .. string_ptr + string_length];
             
             if (fd == fd_stdout) {
-                const stdout = std.io.getStdOut().writer();
-                try stdout.print("{s}", .{string});
+                // This is a big, dirty hack, but I do not want to redirect
+                // file streams. So I guess it will stay like that.
+                //
+                // By the way, even gdb doesn't do anything with stdout, so
+                // what t88 does here is wild.
+                if (self.running_interactively) {
+                    self.latest_stdout = string;
+                } else {
+                    const stdout = std.io.getStdOut().writer();
+                    try stdout.print("{s}", .{string});
+                }
             } else {
                 std.debug.panic("can't write to fd {}\n", .{fd});
             }
