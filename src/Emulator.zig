@@ -1,7 +1,9 @@
 const std = @import("std");
 const common = @import("common.zig");
 const intel8088 = @import("intel8088_cpu_description.zig");
-const Parser = @import("Parser.zig");
+const TypeCheckerAndLowerer = @import("TypeCheckerAndLowerer.zig");
+
+const Instruction = TypeCheckerAndLowerer.Instruction;
 
 const print = std.debug.print;
 
@@ -11,7 +13,7 @@ flags: std.EnumArray(intel8088.Flag, bool),
 latest_stdout: ?[]const u8,
 running_interactively: bool,
 
-instructions: []const Parser.Instruction,
+instructions: []const Instruction,
 allocator: std.mem.Allocator,
 
 pub const LogicalAddress = struct {
@@ -31,7 +33,7 @@ pub const Diff = struct {
     location: MachineLocation,
 };
 
-pub fn init(allocator: std.mem.Allocator, assembled_code: Parser.AssembledProgram) !@This() {
+pub fn init(allocator: std.mem.Allocator, assembled_code: TypeCheckerAndLowerer.AssembledProgram) !@This() {
     // TODO: This should be 1 megabyte
     const memory = try allocator.alloc(u8, 32);
     var memory_index: u32 = 0;
@@ -370,7 +372,7 @@ fn write(self: *@This(), location: MachineLocation, value: i16) void {
     }
 }
 
-fn currentInstruction(self: *const @This()) ?Parser.Instruction {
+fn currentInstruction(self: *const @This()) ?Instruction {
     const ip = @as(u16, @bitCast(self.load(.{ .register = .ip })));
     if (ip < self.instructions.len) {
         return self.instructions[ip];

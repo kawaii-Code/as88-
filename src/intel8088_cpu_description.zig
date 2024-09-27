@@ -114,6 +114,88 @@ pub const AllowedOperands = std.EnumSet(enum {
     memory,
 });
 
+pub const asm_syntax = struct {
+    pub const BinaryOperator = enum {
+        plus,
+        minus,
+        multiply,
+        divide,
+    };
+
+    pub const UnaryOperator = enum {
+        plus,
+        minus,
+    };
+
+    pub const Section = enum {
+        no_section,
+        text_section,
+        data_section,
+        bss_section,
+    };
+
+    pub const Directive = enum {
+        pub const Names = common.EnumMemberNamesToStrings(@This()).init();
+
+        // Memory data types
+        word,
+        ascii,
+        asciz,
+        space,
+        byte,
+
+        // Sections
+        sect,
+        text,
+        data,
+        bss,
+
+        pub fn size(self: @This()) u16 {
+            std.debug.assert(self.hasASize());
+            return switch (self) {
+                .word => 2,
+                .byte => 1,  
+                else => unreachable,
+            };
+        }
+
+        pub fn hasASize(self: @This()) bool {
+            return switch (self) {
+                .word, .byte => true,
+                else => false,
+            };
+        }
+
+        pub fn isString(self: @This()) bool {
+            return switch (self) {
+                .ascii, .asciz => true,
+                else => false,
+            };
+        }
+
+        pub fn isMemoryDataType(self: @This()) bool {
+            return switch (self) {
+                .word, .ascii,. asciz, .space, .byte => true,
+                .sect, .text, .data, .bss => false,
+            };
+        }
+    
+        pub fn isStringDataType(self: @This()) bool {
+            return switch (self) {
+                .ascii, .asciz => true,
+                else => false,
+            };
+        }
+    
+        pub fn isSectionType(self: @This()) bool {
+            return switch (self) {
+                .text, .data, .bss => true,
+                else => false,
+            };
+        }
+    };
+};
+
 // That's a comptime generated array, which is a bit crazy.
 pub const isa = std.EnumArray(InstructionMnemonic, InstructionDescription).init(.{
     .mov = .{ .allowed_operands = &.{ memOrReg(), memOrRegOrImm() } },
@@ -137,39 +219,6 @@ pub const isa = std.EnumArray(InstructionMnemonic, InstructionDescription).init(
     .nop = .{ },
     .sys = .{ },
 });
-
-pub const asm_syntax = struct {
-    pub const Directive = enum {
-        pub const Names = common.EnumMemberNamesToStrings(@This()).init();
-
-        // Memory data types
-        word,
-        ascii,
-        asciz,
-        space,
-        byte,
-
-        // Sections
-        sect,
-        text,
-        data,
-        bss,
-
-        pub fn isMemoryDataType(self: @This()) bool {
-            return switch (self) {
-                .word, .ascii,. asciz, .space, .byte => true,
-                .sect, .text, .data, .bss => false,
-            };
-        }
-    
-        pub fn isSectionType(self: @This()) bool {
-            return switch (self) {
-                .text, .data, .bss => true,
-                else => false,
-            };
-        }
-    };
-};
 
 fn memOrImm() AllowedOperands {
     return AllowedOperands.initMany(&.{ .memory, .immediate });

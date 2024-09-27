@@ -7,29 +7,60 @@ const Token = Tokenizer.Token;
 const print = std.debug.print;
 const SourceLocation = Tokenizer.SourceLocation;
 
-
 const Self = @This();
 
-pub const AssembledProgram = struct {
-    instructions: std.ArrayList(Instruction),
-    memory: std.ArrayList([]const u8),
-    labels: std.StringHashMap(Label),
-    constants: std.StringHashMap(i16),
+pub const AstNode = union(enum) {
+    instruction: InstructionAstNode,
+    label: LabelAstNode,
+    constant: ConstantDefinitionAstNode,
+    data_field: DataFieldAstNode,
 };
 
-pub const Instruction = struct {
+pub const DataFieldAstNode = struct {
+    // Not strict
+    data_type: intel8088.asm_syntax.Directive,
+    size: u16,
+    initializer: *ExpressionAstNode,
+};
+
+pub const ConstantDefinitionAstNode = struct {
+    name: []const u8,
+    initializer: *ExpressionAstNode,
+};
+
+pub const ExpressionAstNode = union(enum) {
+    binary: BinaryExpressionAstNode,
+    unary: UnaryExpressionAstNode,
+    value: ValueAstNode,
+};
+
+pub const BinaryExpressionAstNode = struct {
+    left: *ExpressionAstNode,
+    right: *ExpressionAstNode,
+    operator: intel8088.asm_syntax.BinaryOperator,
+};
+
+pub const UnaryExpressionAstNode = struct {
+    operand: *ExpressionAstNode,
+    operator: intel8088.asm_syntax.UnaryOperator,
+};
+
+pub const ValueAstNode = union(enum) {
+    string: []const u8, // this should only be allowed in data fields
+    identifier: []const u8,
+    register: intel8088.Register,
+    word: i16, // There are more variants, like unsigned word,
+               // byte and unsigned byte
+};
+
+pub const InstructionAstNode = struct {
     mnemonic: intel8088.InstructionMnemonic,
-    operands: []const intel8088.InstructionOperand,
+    operands: []const *ExpressionAstNode,
     location: SourceLocation,
 };
 
-// A label can address either memory or code, e.g.
-// L1: MOV AX, BX
-// or
-// L1:  .WORD   2
-pub const Label = union(enum) {
-    instruction: u16,
-    memory_field: u16,
+pub const LabelAstNode = struct {
+    name: []const u8,
 };
 
 const ParseState = enum {
@@ -40,41 +71,44 @@ const ParseState = enum {
 };
 
 
+pub const ParseResult = struct {
+    outside_any_section: std.ArrayList(AstNode),
+    text_section: std.ArrayList(AstNode),
+    data_section: std.ArrayList(AstNode),
+    bss_section: std.ArrayList(AstNode),
+};
+
 allocator: std.mem.Allocator,
-result: AssembledProgram,
 tokens: []Token,
 locations: []SourceLocation,
 position: usize,
 
-
 pub fn parse(
     tokens: std.MultiArrayList(Tokenizer.TokenWithLocation),
-    allocator: std.mem.Allocator
-) !AssembledProgram {
+    allocator: std.mem.Allocator,
+) !ParseResult {
     var parser = Self{
         .allocator = allocator,
-        .result = .{
-            .instructions = std.ArrayList(Instruction).init(allocator),
-            .constants = std.StringHashMap(i16).init(allocator),
-            .memory = std.ArrayList([]const u8).init(allocator),
-            .labels = std.StringHashMap(Label).init(allocator),
-        },
         .tokens = tokens.items(.token),
         .locations = tokens.items(.location),
         .position = 0,
     };
+    
+    var outside_any_section = std.ArrayList(AstNode).init(allocator);
+    var text_section = std.ArrayList(AstNode).init(allocator);
+    var data_section = std.ArrayList(AstNode).init(allocator);
+    var bss_section = std.ArrayList(AstNode).init(allocator);
 
-    try parser.preprocess(allocator);
-
-    var parser_state: ParseState = .no_section;
+    var current_section: intel8088.asm_syntax.Section = .no_section;
     while (parser.peek()) |token| {
+        var parsed_node: ?AstNode = null;
         switch (token) {
             .directive => |directive| {
                 if (directive == .sect) {
                     _ = parser.next();
                     if (parser.match(.directive)) |next_directive| {
                         if (next_directive.directive.isSectionType()) {
-                            parser_state = switch(next_directive.directive) {
+                            current_section = switch(next_directive.directive) {
                                 .text => .text_section,
                                 .data => .data_section,
                                 .bss => .bss_section,
@@ -89,399 +123,250 @@ pub fn parse(
                         unreachable;
                     }
                     _ = parser.next();
+                } else if (directive.isMemoryDataType()) {
+                    parsed_node = try parser.parseDataField();
+                    print("emit data field {}\n\n", .{parsed_node.?});
                 } else {
-                    if (!directive.isMemoryDataType()) {
-                        print("didn't expect directive '{}'\n", .{directive});
-                    }
+                    print("didn't expect directive '{}'\n", .{directive});
                     _ = parser.next();
+                    unreachable;
                 }
             },
             .instruction_mnemonic => |_| {
-                try parser.parseInstruction();
+                parsed_node = try parser.parseInstruction() orelse {
+                    // TODO: Report error
+                    unreachable;
+                };
+            },
+            .identifier => {
+                // TODO: This could lead to confusing errors when
+                // having typos, like MOB instead of MOV. Maybe check
+                // for an equal sign?
+                parsed_node = try parser.parseConstant();
+            },
+            .newline => {
+                _ = parser.next();
+            },
+            .label => {
+                parsed_node = try parser.parseLabel();
             },
             .comment => {
                 _ = parser.next();
                 _ = parser.match(.newline);
             },
-            .newline, .label => {
-                _ = parser.next();
-            },
             else => {
                 _ = parser.next();
             },
         }
-    }
-
-    return parser.result;
-}
-
-// Tokens are preprocessed before being parsed.
-// This step finds and sets up labels and data fields.
-// It also computes how much memory the DATA and BSS sections occupy.
-fn preprocess(
-    self: *Self,
-    allocator: std.mem.Allocator
-) !void {
-    // After preprocessing the token stream,
-    // go back to the beginning.
-    defer self.position = 0;
-
-    var next_token_is_under_label: ?[]const u8 = null;
-    var instruction_pointer: u16 = 0;
-    var memory_pointer: u16 = 0;
-    while (self.next()) |token| : ({
-        if (!token.isWhitespace()) {
-            next_token_is_under_label = if (token.is(.label)) token.label else null;
-        }
-    }) {
-        switch (token) {
-            .instruction_mnemonic => |_| {
-                if (next_token_is_under_label) |label_identifier| {
-                    const bucket = try self.result.labels.getOrPut(label_identifier);
-                    if (bucket.found_existing) {
-                        // TODO: Report duplicate label error
-                        unreachable;
-                    } else {
-                        bucket.value_ptr.* = Label{ .instruction = instruction_pointer };
-                    }
-                }
-                instruction_pointer += 1;
-            },
-            .directive => |directive| {
-                if (!directive.isMemoryDataType()) {
-                    continue;
-                }
-
-                var maybe_memory_field: ?[]u8 = null;
-                if (directive == .space) {
-                    if (self.next()) |next_token| {
-                        if (next_token.is(.number)) {
-                            // TODO: Check that we are in bss section
-                            if (next_token.number >= 0) {
-                                // TODO: Check that number is not negatvie
-                                maybe_memory_field = try allocator.alloc(u8, @as(usize, @intCast(next_token.number)));
-                                @memset(maybe_memory_field.?, 0);
-                            } else {
-                                // TODO: Report error
-                            }
-                        } else {
-                            // TODO: Report error
-                        }
-                    } else {
-                        // TODO: Report error
-                    }
-                } else if (directive == .word) {
-                    if (self.match(.number)) |number_token| {
-                        maybe_memory_field = try allocator.alloc(u8, 2);
-                        std.mem.writeInt(i16, maybe_memory_field.?[0 .. 2], number_token.number, .little);
-                    } else {
-                        // TODO: Report error
-                    }
-                } else if (directive == .byte) {
-                    if (self.match(.number)) |number_token| {
-                        maybe_memory_field = try allocator.alloc(u8, 1);
-                        maybe_memory_field.?[0] = @as(u8, @intCast(number_token.number));
-                    } else {
-                        // TODO: Report error
-                    }
-                } else if (directive == .ascii or directive == .asciz) {
-                    if (self.match(.string)) |string_token| {
-                        if (directive == .asciz) {
-                            const string0 = try allocator.dupeZ(u8, string_token.string);
-                            // Interestingly, in zig, an implicit cast is allowed here:
-                            // maybe_memory_field = string0; // [:0]u8 -> []u8
-                            //
-                            // But it doesn't include the sentinel element. I don't know if this is
-                            // good or bad, but it got me a little.
-                            maybe_memory_field = string0[0 .. string0.len + 1];
-                        } else {
-                            maybe_memory_field = try allocator.dupe(u8, string_token.string);
-                        }
-                    } else {
-                        // TODO: Report error
-                    }
-                } else {
-                    unreachable;
-                }
-                
-                if (next_token_is_under_label) |label_identifier| {
-                    const bucket = try self.result.labels.getOrPut(label_identifier);
-                    if (bucket.found_existing) {
-                        // TODO: Report duplicate label error
-                        unreachable;
-                    } else {
-                        bucket.value_ptr.* = Label{ .memory_field = memory_pointer };
-                    }
-                }
-
-                if (maybe_memory_field) |memory_field| {
-                    try self.result.memory.append(memory_field);
-                    memory_pointer += @as(u16, @intCast(memory_field.len));
-                }
-            },
-            else => {
-                if (next_token_is_under_label) |_| {
-                    // TODO: Report error
-                }
+        
+        if (parsed_node) |node| {
+            switch (current_section) {
+                .no_section => try outside_any_section.append(node),
+                .text_section => try text_section.append(node),
+                .data_section => try data_section.append(node),
+                .bss_section => try bss_section.append(node),
             }
         }
     }
 
-    // Another pass, solely for constants. It is needed
-    // to allow using labels in constant definitions.
-    //
-    // It still doesn't really work if we're using constants
-    // inside other constants, which is super bad. That's why
-    // the greedy "text search & replace" approach I've been
-    // doing is bad. The binding needs to happen later. Anyway,
-    // I won't fix that right now.
-    self.position = 0;
-    while (self.next()) |token| {
-        switch (token) {
-            .identifier => |_| {
-                _ = self.prev();
-                try self.parseConstant();
-            },
-            else => continue,
-        }
-    }
+    return ParseResult{
+        .outside_any_section = outside_any_section,
+        .text_section = text_section,
+        .data_section = data_section,
+        .bss_section = bss_section,
+    };
 }
 
-fn parseConstant(self: *Self) !void {
+fn parseConstant(self: *Self) !?AstNode {
     const constant_name_token = self.next() orelse unreachable;
     if (self.next()) |equals_token| {
         if (equals_token != .equals_sign) {
             // TODO: Report error
-            return;
+            return null;
         }
 
-        const value = (try self.parseExpression()) orelse return; // TODO: Report error
-        switch (value) {
-            .register, .memory => {
-                print("Variable can only be an immediate, was: {}\n", .{value});
-            },
-            .immediate => |number| {
-                const bucket = try self.result.constants.getOrPut(constant_name_token.identifier);
-                if (bucket.found_existing) {
-                    // TODO: Report duplicate constant error
-                    unreachable;
-                } else {
-                    bucket.value_ptr.* = number;
-                }
-            },
-        }
+        const initializer = (try self.parseExpression()) orelse return null;
+        return .{ .constant = .{
+            .name = constant_name_token.identifier,
+            .initializer = initializer,
+        } };
+    } else {
+        // TODO: Report error
+        unreachable;
     }
 }
 
-// TODO: Check the operands according to description
-fn parseInstruction(self: *Self) !void {
+fn parseLabel(self: *Self) !AstNode {
+    const label_name_token = self.next() orelse unreachable;
+    std.debug.assert(label_name_token.is(.label));
+    return .{ .label = .{
+        .name = label_name_token.label,
+    } };
+}
+
+fn parseDataField(self: *Self) !AstNode {
+    const data_type_token = self.next() orelse unreachable;
+    std.debug.assert(data_type_token.is(.directive));
+
+    const data_type_directive = data_type_token.directive;
+    if (data_type_directive.isMemoryDataType()) {
+        var size: u16 = 0;
+        var initializer: ?*ExpressionAstNode = null;
+        if (data_type_directive == .space) {
+            if (self.next()) |space_size| {
+                if (space_size.is(.number)) {
+                    const number = space_size.number;
+                    if (number < 0) {
+                        // TODO: Report error
+                        unreachable;
+                    }
+                    size = @as(u16, @intCast(space_size.number));
+                    // There shouldn't be an initializer, actually.
+                    // Or rather, it's space-sized zero filled string.
+                    initializer = try self.parseExpression();
+                } else {
+                    // TODO: Report error
+                    unreachable;
+                }
+            } else {
+                // TODO: Report error
+                unreachable;
+            }
+        } else if (data_type_directive.isStringDataType()) {
+            initializer = try self.parseExpression();
+            size = 0; // ???
+        } else {
+            size = data_type_directive.size();
+            initializer = try self.parseExpression();
+        }
+
+        if (initializer) |notnull_initializer| {
+            return .{ .data_field = .{
+                .data_type = data_type_directive,
+                .size = size,
+                .initializer = notnull_initializer,
+            } };
+        } else {
+            // TODO: Report error
+            unreachable;
+        }
+    } else {
+        // TODO: Report error
+        unreachable;
+    }
+}
+
+fn parseInstruction(self: *Self) !?AstNode {
     const instruction_location = self.peekLocation();
     const instruction_token = self.next() orelse unreachable;
-
     const description = intel8088.isa.get(instruction_token.instruction_mnemonic);
 
-    // I know that I am using an arena, so this is fast.
-    var operands = try self.allocator.alloc(intel8088.InstructionOperand, description.allowed_operands.len);
+    var operands = try self.allocator.alloc(*ExpressionAstNode, description.allowed_operands.len);
     for (0 .. description.allowed_operands.len) |i| {
-        operands[i] = (try self.parseExpression()) orelse return;
+        operands[i] = try self.parseExpression() orelse return null;
         if (i != description.allowed_operands.len - 1) {
-            _ = self.match(.comma) orelse return;
+            _ = self.match(.comma) orelse {
+                print("error({}:{}): expected a comma\n", .{
+                    instruction_location.line,
+                    instruction_location.column,
+                });
+                // TODO: Report error
+                unreachable;
+            };
         }
     }
-    try self.result.instructions.append(.{
+    return .{ .instruction = .{
         .mnemonic = instruction_token.instruction_mnemonic,
         .operands = operands,
         .location = instruction_location,
-    });
+    } };
 }
 
-fn parseExpression(self: *Self) !?intel8088.InstructionOperand {
-    const ExpressionNode = union(enum) {
-        add,
-        sub,
-        mul,
-        div,
-        operand: intel8088.InstructionOperand,
+fn parseExpression(self: *Self) !?*ExpressionAstNode {
+    return self.parseBinaryExpression(0);
+}
 
-        pub fn isOperator(node: @This()) bool {
-            return switch (node) {
-                .add, .sub, .mul, .div => true,
-                .operand => false,
-            };
+fn parseBinaryExpression(self: *Self, last_precedence: i32) !?*ExpressionAstNode {
+    const expression : *ExpressionAstNode = try self.parseUnaryExpression() orelse return null;
+    while (self.peek()) |token| {
+        if (!token.isOperator()) {
+            break;
         }
 
-        pub fn priority(node: @This()) u16 {
-            return switch (node) {
-                .add, .sub => 0,
-                .mul, .div => 1,
-                else => unreachable,
-            };
-        }
-    };
-    
-    const ReversePolishEvaluator = struct {
-        operands: std.ArrayList(ExpressionNode),
-        operators: std.ArrayList(ExpressionNode),
-        rewritten: std.ArrayList(ExpressionNode),
-        allocator: std.mem.Allocator,
+        const operator = token.toBinaryOperator();
 
-        pub fn init(allocator: std.mem.Allocator) !@This() {
-            return @This() {
-                .operands = std.ArrayList(ExpressionNode).init(allocator),
-                .operators = std.ArrayList(ExpressionNode).init(allocator),
-                .rewritten = std.ArrayList(ExpressionNode).init(allocator),
-                .allocator = allocator,
-            };
-        }
-        
-        pub fn deinit(p: *@This()) void {
-            p.operands.deinit();
-            p.operators.deinit();
-            p.rewritten.deinit();
+        const precedence = precedenceOf(operator);
+        if (precedence < last_precedence) {
+            break;
         }
 
-        pub fn addOperand(p: *@This(), operand: intel8088.InstructionOperand) !void {
-            try p.rewritten.append(.{ .operand = operand });
-        }
-        
-        pub fn addOperator(p: *@This(), operator: ExpressionNode) !void {
-            while (p.operators.getLastOrNull()) |last_operator| {
-                if (last_operator.priority() >= operator.priority()) {
-                    try p.rewritten.append(p.operators.pop());
-                } else {
-                    break;
-                }
-            }
-            try p.operators.append(operator);
-        }
-
-        pub fn evaluate(p: *@This()) !?intel8088.InstructionOperand {
-            if (p.rewritten.items.len == 1) {
-                return p.rewritten.items[0].operand;
-            }
-            
-            while (p.operators.popOrNull()) |last_operator| {
-                try p.rewritten.append(last_operator);
-                //try p.addRewrittenBinaryExpression(last_operator);
-            }
-            if (p.operands.items.len > 0) {
-                // TODO: Report error
-                return null;
-            }
-
-            var stack = std.ArrayList(intel8088.InstructionOperand).init(p.allocator);
-            defer stack.deinit();
-            for (p.rewritten.items) |node| {
-                if (node.isOperator()) {
-                    // Flipped, since stack is reversed
-                    const arg2 = stack.popOrNull();
-                    var arg1 = stack.popOrNull();
-                    if (arg1 != null and arg2 != null) {
-                        switch (node) {
-                            // TODO: Overflow and other error checking
-                            .add => arg1.?.immediate += arg2.?.immediate,
-                            .sub => arg1.?.immediate -= arg2.?.immediate,
-                            .mul => arg1.?.immediate *= arg2.?.immediate,
-                            .div => arg1.?.immediate = @divFloor(arg1.?.immediate, arg2.?.immediate),
-                            else => unreachable,
-                        }
-                        try stack.append(arg1.?);
-                    } else {
-                        print("Bad expression\n", .{});
-                        // TODO: Report error
-                    }
-                } else switch (node.operand) {
-                    .memory => {
-                        // TODO: Report error
-                    },
-                    .register => {
-                        // TODO: Report error
-                    },
-                    .immediate => {
-                        try stack.append(node.operand);
-                    }
-                }
-            }
-
-            const result = stack.popOrNull() orelse {
-                print("Bad expression\n", .{});
-                return null;
-            };
-            if (stack.items.len > 0) {
-                // TODO: Report error
-            }
-            return result;
-        }
-        
-        fn addRewrittenBinaryExpression(p: *@This(), operator: ExpressionNode) !void {
-            const arg1 = p.operands.popOrNull() orelse {
-                // TODO: Report error
-                return;
-            };
-            const arg2 = p.operands.popOrNull();
-            if (arg2 != null) {
-                try p.rewritten.append(arg2.?);
-            }
-            try p.rewritten.append(arg1);
-            try p.rewritten.append(operator);
-        }
-    };
-    
-    var polish = try ReversePolishEvaluator.init(self.allocator);
-    defer polish.deinit();
-    while (self.next()) |token| {
-        switch (token) {
-            .number => |number| try polish.addOperand(.{ .immediate = number }),
-            .plus => try polish.addOperator(.add),
-            .minus => try polish.addOperator(.sub),
-            .star => try polish.addOperator(.mul),
-            .forward_slash => try polish.addOperator(.div),
-            .register => |register| try polish.addOperand(.{ .register = register }),
-            .identifier => |identifier| {
-                if (self.result.labels.get(identifier)) |label| {
-                    // TODO: Immediates should be evaluated in i32, for better error reporting
-                    const label_value = switch (label) {
-                        .memory_field => |memory_field| @as(i16, @intCast(memory_field)),
-                        .instruction => |instruction| @as(i16, @intCast(instruction)),
-                    };
-                    try polish.addOperand(.{ .immediate = label_value });
-                } else if (self.result.constants.get(identifier)) |value| {
-                    try polish.addOperand(.{ .immediate = value });
-                } else {
-                    // TODO: Report error
-                    std.debug.panic("undeclared identifier '{s}'\n", .{identifier});
-                }
-            },
-            .left_paren => {
-                const nested_memory_operand = try self.parseExpression() orelse return null;
-                if (self.match(.right_paren)) |_| {
-                    switch (nested_memory_operand) {
-                        .immediate => |address| try polish.addOperand(.{ .memory = @as(u16, @intCast(address)) }),
-                        else => {
-                            // TODO: Report unsupported type
-                            print("Memory must be an immediate, found {}", .{nested_memory_operand});
-                            return null;
-                        }
-                    }
-                } else {
-                    // TODO: Report unclosed parentheses
-                }
-            },
-            // On any other token, we assume that the expression ended
-            // and it's time to evaluate it.
-            else => {
-                // Go 1 token back, since we skipped one token right after the expression end.
-                _ = self.prev();
-
-                if (try polish.evaluate()) |result| {
-                    return result;
-                }
-                return null;
-            },
+        _ = self.next();
+        const maybe_right = try self.parseBinaryExpression(precedence + 1);
+        if (maybe_right) |right| {
+            const left = try self.allocator.create(ExpressionAstNode);
+            left.* = expression.*;
+            expression.* = .{ .binary = .{
+                .left = left,
+                .right = right,
+                .operator = operator,
+            } };
+        } else {
+            // TODO: Report error
+            unreachable;
         }
     }
-    // TODO: Report error
-    return null;
+
+    return expression;
+}
+
+fn parseUnaryExpression(self: *Self) !?*ExpressionAstNode {
+    const current = self.peek() orelse unreachable;
+
+    switch (current) {
+        .plus, .minus => {
+            const operator: intel8088.asm_syntax.UnaryOperator = switch (current) {
+                .plus => .plus,
+                .minus => .minus,
+                else => unreachable,
+            };
+            const operand = try self.parseUnaryExpression() orelse return null;
+            const result = try self.allocator.create(ExpressionAstNode);
+            result.* = .{ .unary = .{
+                .operand = operand,
+                .operator = operator,
+            } };
+            return result;
+        },
+        else => {},
+    }
+
+    return self.parseAtom();
+}
+
+fn parseAtom(self: *Self) !?*ExpressionAstNode {
+    const current = self.next() orelse unreachable;
+    const result = try self.allocator.create(ExpressionAstNode);
+    result.* = switch (current) {
+        .identifier => |identifier| .{ .value = .{ .identifier = identifier } },
+        .register => |register| .{ .value = .{ .register = register } },
+        .number => |number| .{ .value = .{ .word = number } },
+        // TODO: Zero out the ascii string. Not here though?
+        .string => |string| .{ .value = .{ .string = string } },
+        else => {
+            // TODO: Report error
+            unreachable;
+        },
+    };
+    return result;
+}
+
+fn precedenceOf(operator: intel8088.asm_syntax.BinaryOperator) i32 {
+    return switch (operator) {
+        .plus => 1,
+        .minus => 1,
+        .multiply => 2,
+        .divide => 2,
+    };
 }
 
 fn match(self: *Self, expected: Token.Tag) ?Token {
@@ -536,216 +421,216 @@ fn reportError(self: *Self, comptime fmt: []const u8, args: anytype) void {
 // But the tests get more readable, so this tradeoff was made.
 const testing = std.testing;
 
-test "parses text section" {
-    const shared_beginning = ".SECT .TEXT\n";
-    const allocator = std.testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    {
-        const source = Tokenizer.ProgramSourceCode{
-            .filepath = null,
-            .contents = shared_beginning ++
-                        \\  MOV AX, BX
-        };
-
-        const expected_instructions: []const Instruction = &.{
-            .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .register = .bx } }, .location = .{ .line = 2, .column = 3 } },
-        };
-
-        const tokens = try Tokenizer.tokenize(source, &arena);
-        const assembled_program = try parse(tokens, arena.allocator());
-
-        try testing.expectEqualDeep(expected_instructions, assembled_program.instructions.items);
-    }
-}
- 
-test "parses compound expression" {
-    const shared_beginning = ".SECT .TEXT\n";
-    const allocator = std.testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-   {
-        const source = Tokenizer.ProgramSourceCode{
-            .filepath = null,
-            .contents = shared_beginning ++
-                        \\  MOV AX, 1 + 2
-        };
-
-        const expected_instructions: []const Instruction = &.{
-            .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .immediate = 3 } }, .location = .{ .line = 2, .column = 3 } },
-        };
-
-        const tokens = try Tokenizer.tokenize(source, &arena);
-        const assembled_program = try parse(tokens, arena.allocator());
-
-        try testing.expectEqualDeep(expected_instructions, assembled_program.instructions.items);
-    }
-    
-    {
-        const source = Tokenizer.ProgramSourceCode{
-            .filepath = null,
-            .contents = shared_beginning ++
-                \\! Calculates length, excluding the zero terminator of the string "Hello"
-                \\MOV AX, after_hello - hello - 1
-                \\.SECT .DATA
-                \\hello: .ASCIZ "Hello"
-                \\after_hello: .WORD 0
-        };
-        
-        const expected_labels = &[_]Label {
-            .{ .memory_field = 0 },
-            .{ .memory_field = 6 },
-        };
-        const expected_instructions: []const Instruction = &.{
-            .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .immediate = 5 } }, .location = .{ .line = 3, .column = 1 } },
-            //                                                                                ^^^^^^^^ :( I don't want this
-        };
-        
-        const tokens = try Tokenizer.tokenize(source, &arena);
-        const assembled_program = try parse(tokens, arena.allocator());
-        
-        const actual_labels = collectLabelsToOwnedSlice(&assembled_program.labels, allocator);
-        defer allocator.free(actual_labels);
-
-        try testing.expectEqualSlices(Label, expected_labels, actual_labels);
-        try testing.expectEqualDeep(expected_instructions[0], assembled_program.instructions.items[0]);
-    }
-}
-
-test "parses data section" {
-    const shared_beginning = ".SECT .DATA\n";
-    const allocator = std.testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    {
-        const source = Tokenizer.ProgramSourceCode{
-            .filepath = null,
-            .contents = shared_beginning ++
-                        \\x:    .WORD   3
-                        \\y:    .WORD   5
-        };
-
-        const expected_labels = &[_]Label {
-            .{ .memory_field = 0 },
-            .{ .memory_field = 2 },
-        };
-
-        const expected_memory = &[_][]const u8{
-            &.{ 3, 0 },
-            &.{ 5, 0 },
-        };
-
-        const tokens = try Tokenizer.tokenize(source, &arena);
-        const assembled_program = try parse(tokens, arena.allocator());
-
-        const actual_labels = collectLabelsToOwnedSlice(&assembled_program.labels, allocator);
-        defer allocator.free(actual_labels);
-
-        try testing.expectEqualSlices(Label, expected_labels, actual_labels);
-        try testing.expectEqualDeep(expected_memory, assembled_program.memory.items);
-    }
-
-    {
-        const source = Tokenizer.ProgramSourceCode{
-            .filepath = null,
-            .contents = shared_beginning ++
-                        \\hello_world:  .ASCII "Hello, World!\n"
-                        \\hello_world0:  .ASCIZ "Hello, World!\n"
-        };
-
-        // Label order is messed up because HashMap does not guarantee order:
-        // https://ziglang.org/documentation/master/std/#std.hash_map.HashMap
-        // I don't really care about order though, it's enough that the memory
-        // pointers are correct. Order can be hardcoded, like here.
-        const expected_labels = &[_]Label {
-            .{ .memory_field = 14 },
-            .{ .memory_field = 0 },
-        };
-
-        const expected_memory = &[_][]const u8{
-            // I didn't do this by hand
-            &.{72, 101, 108, 108, 111, 44, 32, 87, 111, 114, 108, 100, 33, 10 },
-            &.{72, 101, 108, 108, 111, 44, 32, 87, 111, 114, 108, 100, 33, 10, 0},
-        };
-        
-        const tokens = try Tokenizer.tokenize(source, &arena);
-        const assembled_program = try parse(tokens, arena.allocator());
-
-        const actual_labels = collectLabelsToOwnedSlice(&assembled_program.labels, allocator);
-        defer allocator.free(actual_labels);
-
-        try testing.expectEqualSlices(Label, expected_labels, actual_labels);
-        try testing.expectEqualDeep(expected_memory, assembled_program.memory.items);
-    }
-}
-
-test "parses bss section" {
-    const shared_beginning = ".SECT .BSS\n";
-    const allocator = std.testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    {
-        const source = Tokenizer.ProgramSourceCode{
-            .filepath = null,
-            .contents = shared_beginning ++
-                        \\x:    .SPACE   7
-        };
-
-        const expected_labels = &[_]Label{
-            .{ .memory_field = 0 },
-        };
-
-        const expected_memory = &[_][]const u8{
-            &.{ 0, 0, 0, 0, 0, 0, 0 },
-        };
-
-        const tokens = try Tokenizer.tokenize(source, &arena);
-        const assembled_program = try parse(tokens, arena.allocator());
-
-        const actual_labels = collectLabelsToOwnedSlice(&assembled_program.labels, allocator);
-        defer allocator.free(actual_labels);
-
-        try testing.expectEqualSlices(Label, expected_labels, actual_labels);
-        try testing.expectEqualDeep(expected_memory, assembled_program.memory.items);
-    }
-}
-
-test "constant declarations work" {
-    const allocator = std.testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    {
-        const source = Tokenizer.ProgramSourceCode{
-            .filepath = null,
-            .contents =
-                \\  _MY_VAR = 2
-                \\MOV   AX, _MY_VAR
-        };
-
-        const expected_instructions = &[_]Instruction{
-            .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .immediate = 2 } }, .location = .{ .line = 2, .column = 1 } },
-        };
-
-        const tokens = try Tokenizer.tokenize(source, &arena);
-        const assembled_program = try parse(tokens, arena.allocator());
-
-        try testing.expectEqualDeep(expected_instructions, assembled_program.instructions.items);
-    }
-}
-
-fn collectLabelsToOwnedSlice(hashmap: *const std.StringHashMap(Label), allocator: std.mem.Allocator) []Label {
-    var result = allocator.alloc(Label, hashmap.count()) catch unreachable;
-    
-    var i: usize = 0;
-    var value_it = hashmap.valueIterator();
-    while (value_it.next()) |value| {
-        result[i] = value.*;
-        i += 1;
-    }
-    return result;
-}
+// test "parses text section" {
+//     const shared_beginning = ".SECT .TEXT\n";
+//     const allocator = std.testing.allocator;
+//     var arena = std.heap.ArenaAllocator.init(allocator);
+//     defer arena.deinit();
+// 
+//     {
+//         const source = Tokenizer.ProgramSourceCode{
+//             .filepath = null,
+//             .contents = shared_beginning ++
+//                         \\  MOV AX, BX
+//         };
+// 
+//         const expected_instructions: []const Instruction = &.{
+//             .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .register = .bx } }, .location = .{ .line = 2, .column = 3 } },
+//         };
+// 
+//         const tokens = try Tokenizer.tokenize(source, &arena);
+//         const assembled_program = try parse(tokens, arena.allocator());
+// 
+//         try testing.expectEqualDeep(expected_instructions, assembled_program.instructions.items);
+//     }
+// }
+//  
+// test "parses compound expression" {
+//     const shared_beginning = ".SECT .TEXT\n";
+//     const allocator = std.testing.allocator;
+//     var arena = std.heap.ArenaAllocator.init(allocator);
+//     defer arena.deinit();
+// 
+//    {
+//         const source = Tokenizer.ProgramSourceCode{
+//             .filepath = null,
+//             .contents = shared_beginning ++
+//                         \\  MOV AX, 1 + 2
+//         };
+// 
+//         const expected_instructions: []const Instruction = &.{
+//             .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .immediate = 3 } }, .location = .{ .line = 2, .column = 3 } },
+//         };
+// 
+//         const tokens = try Tokenizer.tokenize(source, &arena);
+//         const assembled_program = try parse(tokens, arena.allocator());
+// 
+//         try testing.expectEqualDeep(expected_instructions, assembled_program.instructions.items);
+//     }
+//     
+//     {
+//         const source = Tokenizer.ProgramSourceCode{
+//             .filepath = null,
+//             .contents = shared_beginning ++
+//                 \\! Calculates length, excluding the zero terminator of the string "Hello"
+//                 \\MOV AX, after_hello - hello - 1
+//                 \\.SECT .DATA
+//                 \\hello: .ASCIZ "Hello"
+//                 \\after_hello: .WORD 0
+//         };
+//         
+//         const expected_labels = &[_]Label {
+//             .{ .memory_field = 0 },
+//             .{ .memory_field = 6 },
+//         };
+//         const expected_instructions: []const Instruction = &.{
+//             .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .immediate = 5 } }, .location = .{ .line = 3, .column = 1 } },
+//             //                                                                                ^^^^^^^^ :( I don't want this
+//         };
+//         
+//         const tokens = try Tokenizer.tokenize(source, &arena);
+//         const assembled_program = try parse(tokens, arena.allocator());
+//         
+//         const actual_labels = collectLabelsToOwnedSlice(&assembled_program.labels, allocator);
+//         defer allocator.free(actual_labels);
+// 
+//         try testing.expectEqualSlices(Label, expected_labels, actual_labels);
+//         try testing.expectEqualDeep(expected_instructions[0], assembled_program.instructions.items[0]);
+//     }
+// }
+// 
+// test "parses data section" {
+//     const shared_beginning = ".SECT .DATA\n";
+//     const allocator = std.testing.allocator;
+//     var arena = std.heap.ArenaAllocator.init(allocator);
+//     defer arena.deinit();
+// 
+//     {
+//         const source = Tokenizer.ProgramSourceCode{
+//             .filepath = null,
+//             .contents = shared_beginning ++
+//                         \\x:    .WORD   3
+//                         \\y:    .WORD   5
+//         };
+// 
+//         const expected_labels = &[_]Label {
+//             .{ .memory_field = 0 },
+//             .{ .memory_field = 2 },
+//         };
+// 
+//         const expected_memory = &[_][]const u8{
+//             &.{ 3, 0 },
+//             &.{ 5, 0 },
+//         };
+// 
+//         const tokens = try Tokenizer.tokenize(source, &arena);
+//         const assembled_program = try parse(tokens, arena.allocator());
+// 
+//         const actual_labels = collectLabelsToOwnedSlice(&assembled_program.labels, allocator);
+//         defer allocator.free(actual_labels);
+// 
+//         try testing.expectEqualSlices(Label, expected_labels, actual_labels);
+//         try testing.expectEqualDeep(expected_memory, assembled_program.memory.items);
+//     }
+// 
+//     {
+//         const source = Tokenizer.ProgramSourceCode{
+//             .filepath = null,
+//             .contents = shared_beginning ++
+//                         \\hello_world:  .ASCII "Hello, World!\n"
+//                         \\hello_world0:  .ASCIZ "Hello, World!\n"
+//         };
+// 
+//         // Label order is messed up because HashMap does not guarantee order:
+//         // https://ziglang.org/documentation/master/std/#std.hash_map.HashMap
+//         // I don't really care about order though, it's enough that the memory
+//         // pointers are correct. Order can be hardcoded, like here.
+//         const expected_labels = &[_]Label {
+//             .{ .memory_field = 14 },
+//             .{ .memory_field = 0 },
+//         };
+// 
+//         const expected_memory = &[_][]const u8{
+//             // I didn't do this by hand
+//             &.{72, 101, 108, 108, 111, 44, 32, 87, 111, 114, 108, 100, 33, 10 },
+//             &.{72, 101, 108, 108, 111, 44, 32, 87, 111, 114, 108, 100, 33, 10, 0},
+//         };
+//         
+//         const tokens = try Tokenizer.tokenize(source, &arena);
+//         const assembled_program = try parse(tokens, arena.allocator());
+// 
+//         const actual_labels = collectLabelsToOwnedSlice(&assembled_program.labels, allocator);
+//         defer allocator.free(actual_labels);
+// 
+//         try testing.expectEqualSlices(Label, expected_labels, actual_labels);
+//         try testing.expectEqualDeep(expected_memory, assembled_program.memory.items);
+//     }
+// }
+// 
+// test "parses bss section" {
+//     const shared_beginning = ".SECT .BSS\n";
+//     const allocator = std.testing.allocator;
+//     var arena = std.heap.ArenaAllocator.init(allocator);
+//     defer arena.deinit();
+// 
+//     {
+//         const source = Tokenizer.ProgramSourceCode{
+//             .filepath = null,
+//             .contents = shared_beginning ++
+//                         \\x:    .SPACE   7
+//         };
+// 
+//         const expected_labels = &[_]Label{
+//             .{ .memory_field = 0 },
+//         };
+// 
+//         const expected_memory = &[_][]const u8{
+//             &.{ 0, 0, 0, 0, 0, 0, 0 },
+//         };
+// 
+//         const tokens = try Tokenizer.tokenize(source, &arena);
+//         const assembled_program = try parse(tokens, arena.allocator());
+// 
+//         const actual_labels = collectLabelsToOwnedSlice(&assembled_program.labels, allocator);
+//         defer allocator.free(actual_labels);
+// 
+//         try testing.expectEqualSlices(Label, expected_labels, actual_labels);
+//         try testing.expectEqualDeep(expected_memory, assembled_program.memory.items);
+//     }
+// }
+// 
+// test "constant declarations work" {
+//     const allocator = std.testing.allocator;
+//     var arena = std.heap.ArenaAllocator.init(allocator);
+//     defer arena.deinit();
+// 
+//     {
+//         const source = Tokenizer.ProgramSourceCode{
+//             .filepath = null,
+//             .contents =
+//                 \\  _MY_VAR = 2
+//                 \\MOV   AX, _MY_VAR
+//         };
+// 
+//         const expected_instructions = &[_]Instruction{
+//             .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .immediate = 2 } }, .location = .{ .line = 2, .column = 1 } },
+//         };
+// 
+//         const tokens = try Tokenizer.tokenize(source, &arena);
+//         const assembled_program = try parse(tokens, arena.allocator());
+// 
+//         try testing.expectEqualDeep(expected_instructions, assembled_program.instructions.items);
+//     }
+// }
+// 
+// fn collectLabelsToOwnedSlice(hashmap: *const std.StringHashMap(Label), allocator: std.mem.Allocator) []Label {
+//     var result = allocator.alloc(Label, hashmap.count()) catch unreachable;
+//     
+//     var i: usize = 0;
+//     var value_it = hashmap.valueIterator();
+//     while (value_it.next()) |value| {
+//         result[i] = value.*;
+//         i += 1;
+//     }
+//     return result;
+// }

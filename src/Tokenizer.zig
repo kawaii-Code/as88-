@@ -52,6 +52,23 @@ pub const Token = union(enum) {
         return self == tag;
     }
 
+    pub fn isOperator(self: @This()) bool {
+        return switch (self) {
+            .plus, .minus, .star, .forward_slash => true,
+            else => false,
+        };
+    }
+
+    pub fn toBinaryOperator(self: @This()) intel8088.asm_syntax.BinaryOperator {
+        return switch(self) {
+            .plus => .plus,
+            .minus => .minus,
+            .star => .multiply,
+            .forward_slash => .divide,
+            else => unreachable,
+        };
+    }
+
     pub fn isWhitespace(self: @This()) bool {
         return switch (self) {
             .newline, .comment => true,

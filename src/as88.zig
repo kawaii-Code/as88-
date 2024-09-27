@@ -20,8 +20,9 @@ pub const intel8088 = @import("intel8088_cpu_description.zig");
 pub const Tokenizer = @import("Tokenizer.zig");
 pub const Parser = @import("Parser.zig");
 pub const Emulator = @import("Emulator.zig");
+pub const TypeCheckerAndLowerer = @import("TypeCheckerAndLowerer.zig");
 
-pub const AssembledProgram = Parser.AssembledProgram;
+pub const AssembledProgram = TypeCheckerAndLowerer.AssembledProgram;
 pub const ProgramSourceCode = Tokenizer.ProgramSourceCode;
 
 pub fn assemble(
@@ -36,6 +37,7 @@ pub fn assemble(
 
     //print("---------------------------\n", .{});
     const parse_result = try Parser.parse(tokens, arena.allocator());
+    return try TypeCheckerAndLowerer.typeCheckAndFinalize(&parse_result, arena.allocator());
     //var label_it = parse_result.labels.valueIterator();
     //while (label_it.next()) |label| {
     //    print("{}\n", .{label});
@@ -46,5 +48,4 @@ pub fn assemble(
     //for (parse_result.instructions.items) |instruction| {
     //    print("{}\n", .{instruction});
     //}
-    return parse_result;
 }
