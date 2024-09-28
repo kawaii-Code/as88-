@@ -25,19 +25,29 @@ pub const TypeCheckerAndLowerer = @import("TypeCheckerAndLowerer.zig");
 pub const AssembledProgram = TypeCheckerAndLowerer.AssembledProgram;
 pub const ProgramSourceCode = Tokenizer.ProgramSourceCode;
 
+pub const AssembledProgramOrErrors = union(enum) {
+    program: AssembledProgram,
+    errors:  std.ArrayList([]const u8),
+};
+
 pub fn assemble(
     source: ProgramSourceCode,
     arena: *std.heap.ArenaAllocator
-) !AssembledProgram {
-    const tokens = try Tokenizer.tokenize(source, arena);
+) !AssembledProgramOrErrors {
+    var tokenizer = Tokenizer.init(arena);
+    try tokenizer.tokenize(source);
+    if (tokenizer.errors.items.len != 0) {
+        return .{ .errors = tokenizer.errors };
+    }
     //for (0 .. tokens.slice().len) |i| {
     //    const token = tokens.get(i);
     //    print("({}:{}): {}\n", .{ token.location.line, token.location.column, token.token });
     //}
 
     //print("---------------------------\n", .{});
-    const parse_result = try Parser.parse(tokens, arena.allocator());
-    return try TypeCheckerAndLowerer.typeCheckAndFinalize(&parse_result, arena.allocator());
+    const parse_result = try Parser.parse(tokenizer.tokens, arena.allocator());
+    const program = try TypeCheckerAndLowerer.typeCheckAndFinalize(&parse_result, arena.allocator());
+    return .{ .program = program };
     //var label_it = parse_result.labels.valueIterator();
     //while (label_it.next()) |label| {
     //    print("{}\n", .{label});

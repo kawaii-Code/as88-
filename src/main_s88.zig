@@ -24,13 +24,25 @@ pub fn main() !void {
     
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    const assembled_code = try as88.assemble(.{
+    const assembled_program_or_errors = try as88.assemble(.{
         .filepath = filepath,
         .contents = source,
     }, &arena);
+    const assembled_program = switch (assembled_program_or_errors) {
+        .program => |program| program,
+        .errors => |errors| {
+            for (errors.items, 0..) |assembler_error, i| {
+                std.debug.print("{s}", .{ assembler_error });
+                if (i != errors.items.len - 1) {
+                    std.debug.print("\n", .{});
+                }
+            }
+            return;
+        },
+    };
 
     
-    var emulator = try as88.Emulator.init(arena.allocator(), assembled_code);
+    var emulator = try as88.Emulator.init(arena.allocator(), assembled_program);
     defer emulator.deinit();
     //print("{}\n\n", .{emulator});
     while (try emulator.step()) |_| {

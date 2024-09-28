@@ -12,9 +12,9 @@ pub const ProgramSourceCode = struct {
     contents: []const u8,
 };
 
-pub const SourceLocation = struct {
-    line: usize,
-    column: usize,
+pub const TokenizationResult = union(enum) {
+    tokens: std.MultiArrayList(TokenWithLocation),
+    errors: std.ArrayList([]const u8),
 };
 
 pub const TokenWithLocation = struct {
@@ -77,144 +77,188 @@ pub const Token = union(enum) {
     }
 };
 
+pub const SourceLocation = struct {
+    line: usize,
+    column: usize,
+    length: usize,
+};
 
 filepath: ?[]const u8,
 line: []const u8,
 location: SourceLocation,
 position: usize,
 allocator: std.mem.Allocator,
+last_error: std.ArrayList(u8),
+errors: std.ArrayList([]const u8),
 tokens: std.MultiArrayList(TokenWithLocation),
 
-
-pub fn tokenize(
-    source: ProgramSourceCode,
-    arena: *std.heap.ArenaAllocator
-) !std.MultiArrayList(TokenWithLocation) {
-    var tokenizer = Self{
-        .filepath = source.filepath,
+pub fn init(
+    arena: *std.heap.ArenaAllocator,
+) Self {
+    return Self{
+        .filepath = undefined,
         .line = undefined,
         .position = 0,
         .location = .{
             .line = 1,
             .column = 1,
+            .length = 1,
         },
+        .last_error = std.ArrayList(u8).init(arena.allocator()),
         .allocator = arena.allocator(),
+        .errors = std.ArrayList([]const u8).init(arena.allocator()),
         .tokens = std.MultiArrayList(TokenWithLocation) {},
     };
+}
 
+pub fn tokenize(
+    self: *Self,
+    source: ProgramSourceCode,
+) !void {
+    self.filepath = source.filepath;
     var line_it = std.mem.splitScalar(u8, source.contents, '\n');
-    while (line_it.next()) |line| : (tokenizer.location.line += 1) {
-        tokenizer.line = line;
-        tokenizer.location.column = 1;
-        tokenizer.position = 0;
-        
-        while (tokenizer.peek()) |c| : (tokenizer.location.column = tokenizer.position + 1) {
-            switch (c) {
-                '!' => {
-                    try tokenizer.addToken(.comment);
-                    tokenizer.skipUntil('\n');
-                },
-                ',' => try tokenizer.addTokenAndNext(.comma),
-                '(' => try tokenizer.addTokenAndNext(.left_paren),
-                ')' => try tokenizer.addTokenAndNext(.right_paren),
-                ';' => try tokenizer.addTokenAndNext(.semicolon),
-                '+' => try tokenizer.addTokenAndNext(.plus),
-                '*' => try tokenizer.addTokenAndNext(.star),
-                '=' => try tokenizer.addTokenAndNext(.equals_sign),
-                '/' => try tokenizer.addTokenAndNext(.forward_slash),
-                '-', '0'...'9' => number: {
-                    if (c == '-' and !std.ascii.isDigit(tokenizer.peekN(1) orelse 'a')) {
-                        try tokenizer.addTokenAndNext(.minus);
-                        break :number;
-                    }
-                
-                    const unparsed_number = tokenizer.skipWhile(isNumberChar);
-                    if (std.fmt.parseInt(i16, unparsed_number, 0)) |number| {
-                        try tokenizer.addToken(.{ .number = number });
-                    } else |err| switch (err) {
-                        error.InvalidCharacter => tokenizer.reportError("bad character in integer '{s}'\n", .{unparsed_number}),
-                        error.Overflow => {
-                            tokenizer.reportError("integer '{s}' is too big\n", .{unparsed_number});
-                            tokenizer.reportNote("in intel8088 assembly, integers must be in range [-32768 .. 32767]\n", .{});
-                        },
-                    }
-                },
-                'a'...'z', 'A'...'Z', '_' => {
-                    const identifier = tokenizer.skipWhile(isIdentifierChar);
-                    if (intel8088.Register.Names.find(identifier)) |register| {
-                        try tokenizer.addToken(.{ .register = register });
-                    } else if (intel8088.InstructionMnemonic.Names.find(identifier)) |instruction_mnemonic| {
-                        try tokenizer.addToken(.{ .instruction_mnemonic = instruction_mnemonic });
-                    } else {
-                        const token = init: {
-                            if (tokenizer.peek()) |char_after_identifier| {
-                                if (char_after_identifier == ':') { 
-                                    // skip ':'
-                                    _ = tokenizer.next();
-                                    break :init Token{ .label = identifier };
-                                }
-                            }
-                            break :init Token{ .identifier = identifier };
-                        };
-                        try tokenizer.addToken(token);
-                    }
-                },
-                ':' => {
-                    tokenizer.reportError("':' can only follow an identifier, in which case it means a label\n", .{});
-                    _ = tokenizer.next();
-                },
-                '.' => {
-                    _ = tokenizer.next();
-                    if (tokenizer.peek()) |first_directive_char| {
-                        if (isIdentifierChar(first_directive_char)) {
-                            const directive_identifier = tokenizer.skipWhile(isIdentifierChar);
-                            if (intel8088.asm_syntax.Directive.Names.find(directive_identifier)) |directive| {
-                                try tokenizer.addToken(.{ .directive = directive });
-                            } else {
-                                tokenizer.reportError("no directive '{s}' exists\n", .{directive_identifier});
-                                tokenizer.reportNote("'{s}' was interpreted as a directive because it starts with a '.'\n", .{directive_identifier});
-                            }
-                        } else {
-                            tokenizer.reportError("expected a directive after '.'\n", .{});
-                        }
-                    } else {
-                        tokenizer.reportError("expected a directive after '.'\n", .{});
-                    }
-                },
-                '"' => {
-                    if (tokenizer.skipStringLiteral()) |unparsed_string| {
-                        // This allocation will be freed along with the arena
-                        if (std.zig.string_literal.parseAlloc(tokenizer.allocator, unparsed_string)) |string| {
-                            try tokenizer.addToken(.{ .string = string });
-                        } else |_| {
-                            tokenizer.reportError("invalid string literal\n", .{});
-                        }
-                    } else {
-                        tokenizer.reportError("unclosed '\"'\n", .{});
-                    }
-                },
-                ' ', '\t', '\r' => _ = tokenizer.next(),
-                else => {
-                    _ = tokenizer.next();
-                    print("Unhandled char '{c}'\n", .{c});
-                },
+    while (line_it.next()) |line| : (self.location.line += 1) {
+        self.line = line;
+        self.location.column = 1;
+        self.location.length = 1;
+        self.position = 0;
+
+        while (self.peek()) |c| : (self.location.column = self.position + 1) {
+            const token_start = self.position;
+            const maybe_token = self.tokenFromChar(c);
+            const token_length = self.position - token_start;
+
+            if (maybe_token) |token| {
+                try self.tokens.append(self.allocator, .{
+                    .token = token,
+                    .location = .{
+                        .line = self.location.line,
+                        .column = self.position + 1,
+                        .length = token_length,
+                    },
+                });
             }
         }
-        
-        try tokenizer.addToken(.newline);
+
+        try self.tokens.append(self.allocator, .{
+            .token = .newline,
+            .location = .{
+                .line = self.location.line,
+                .column = self.position,
+                .length = 1,
+            },
+        });
     }
-
-
-    return tokenizer.tokens;
 }
 
-fn addTokenAndNext(self: *Self, token: Token) !void {
-    try self.addToken(token);
-    _ = self.next();
-}
+fn tokenFromChar(self: *Self, c: u8) ?Token {
+    switch (c) {
+        ',' => { _ = self.next(); return .comma; },
+        '(' => { _ = self.next(); return .left_paren; },
+        ')' => { _ = self.next(); return .right_paren; },
+        ';' => { _ = self.next(); return .semicolon; },
+        '+' => { _ = self.next(); return .plus; },
+        '*' => { _ = self.next(); return .star; },
+        '=' => { _ = self.next(); return .equals_sign; },
+        '/' => { _ = self.next(); return .forward_slash; },
+        '!' => { self.skipUntil('\n'); return .comment; },
+        ':' => {
+            self.pushError("Unexpected ':'", .{});
+            self.pushNote("':' can only follow an identifier, e.g. `L1:`", .{});
+            self.finishError();
 
-fn addToken(self: *Self, token: Token) !void {
-    try self.tokens.append(self.allocator, .{ .token = token, .location = self.location });
+            _ = self.next();
+            return null;
+        },
+        '-' => {
+            _ = self.next();
+            return .minus;
+        },
+        '0'...'9' => {
+            // Treat numbers as identifiers to report errors for '0hello' for example
+            const unparsed_number = self.skipIdentifier();
+            if (std.fmt.parseInt(i16, unparsed_number, 0)) |number| {
+                return .{ .number = number };
+            } else |err| switch (err) {
+                error.InvalidCharacter => {
+                    self.pushError("bad character in integer '{s}'", .{unparsed_number});
+                    self.finishError();
+                },
+                error.Overflow => {
+                    self.pushError("integer '{s}' is too big", .{unparsed_number});
+                    self.pushNote("integers must be in range [-32768 .. 32767]", .{});
+                    self.finishError();
+                },
+            }
+            
+            return null;
+        },
+        'a'...'z', 'A'...'Z', '_' => {
+            const identifier = self.skipIdentifier();
+            if (intel8088.Register.Names.find(identifier)) |register| {
+                return .{ .register = register };
+            } else if (intel8088.InstructionMnemonic.Names.find(identifier)) |instruction_mnemonic| {
+                return .{ .instruction_mnemonic = instruction_mnemonic };
+            } else {
+                if (self.peek()) |char_after_identifier| {
+                    if (char_after_identifier == ':') {
+                        // skip ':'
+                        _ = self.next();
+                        return .{ .label = identifier };
+                    }
+                }
+                return .{ .identifier = identifier };
+            }
+            return null;
+        },
+        '.' => {
+            _ = self.next();
+            if (self.peek()) |first_directive_char| {
+                if (isIdentifierChar(first_directive_char)) {
+                    const directive_identifier = self.skipIdentifier();
+                    if (intel8088.asm_syntax.Directive.Names.find(directive_identifier)) |directive| {
+                        return .{ .directive = directive };
+                    } else {
+                        self.pushError("no directive '{s}' exists", .{directive_identifier});
+                        self.pushNote("'{s}' was interpreted as a directive because it starts with a '.'", .{directive_identifier});
+                        self.finishError();
+                    }
+                } else {
+                    self.pushError("expected a directive after '.'", .{});
+                    self.finishError();
+                }
+            } else {
+                self.pushError("expected a directive after '.'", .{});
+                self.finishError();
+            }
+            return null;
+        },
+        '"' => {
+            if (self.skipStringLiteral()) |unparsed_string| {
+                // This allocation will be freed along with the arena
+                if (std.zig.string_literal.parseAlloc(self.allocator, unparsed_string)) |string| {
+                    return .{ .string = string };
+                } else |_| {
+                    self.pushError("invalid string literal", .{});
+                    self.finishError();
+                }
+            } else {
+                self.pushError("unclosed '\"'", .{});
+                self.finishError();
+            }
+            return null;
+        },
+        ' ', '\t', '\r' => {
+            _ = self.next();
+            return null;
+        },
+        else => {
+            self.pushError("unextpected char '{c}'", .{c});
+            self.finishError();
+            _ = self.next();
+            return null;
+        },
+    }
 }
 
 fn isIdentifierChar(c: u8) bool {
@@ -224,11 +268,17 @@ fn isIdentifierChar(c: u8) bool {
     };
 }
 
-fn isNumberChar(c: u8) bool {
-    // Accept letters like 'a'..'z' in numbers for better error reporting
-    return isIdentifierChar(c) or c == '-';
+fn skipUntil(self: *Self, sentinel: u8) void {
+    while (self.peek()) |c| {
+        if (c != sentinel) {
+            self.position += 1;
+        } else {
+            break;
+        }
+    }
 }
 
+// Includes quotes, so, returns "abc" instead of abc
 fn skipStringLiteral(self: *Self) ?[]const u8 {
     const start = self.position;
     _ = self.next(); // skip opening '"'
@@ -243,20 +293,10 @@ fn skipStringLiteral(self: *Self) ?[]const u8 {
     return null;
 }
 
-fn skipUntil(self: *Self, sentinel: u8) void {
-    while (self.peek()) |c| {
-        if (c != sentinel) {
-            self.position += 1;
-        } else {
-            break;
-        }
-    }
-}
-
-fn skipWhile(self: *Self, predicate: *const fn (u8) bool) []const u8 {
+fn skipIdentifier(self: *Self) []const u8 {
     const start = self.position;
     while (self.peek()) |c| {
-        if (predicate(c)) {
+        if (isIdentifierChar(c)) {
             self.position += 1;
         } else {
             break;
@@ -279,23 +319,46 @@ fn peekN(self: *const Self, n: usize) ?u8 {
     return common.getOrNull(u8, self.line, self.position + n);
 }
 
-fn reportNote(self: *Self, comptime fmt: []const u8, args: anytype) void {
-    _ = self;
-    print("note: ", .{});
-    print(fmt, args);
+fn pushNote(self: *Self, comptime fmt: []const u8, args: anytype) void {
+    var buf = &self.last_error;
+    std.fmt.format(buf.writer(), "note: ", .{}) catch unreachable;
+    std.fmt.format(buf.writer(), fmt, args) catch unreachable;
+    buf.append('\n') catch unreachable;
 }
 
-fn reportError(self: *Self, comptime fmt: []const u8, args: anytype) void {
-    print("{s}:{}:{}: error: ", .{ self.filepath orelse "no file", self.location.line, self.location.column });
-    print(fmt, args);
-    print("\t{s}\n\t", .{self.line});
-    for (0 .. self.location.column - 1) |_| {
-        print(" ", .{});
+fn pushError(
+    self: *Self,
+    comptime error_fmt: []const u8,
+    error_args: anytype,
+) void {
+    var buf = &self.last_error;
+    if (self.filepath) |filepath| {
+        std.fmt.format(buf.writer(), "{s}:{}:{}: error: ", .{
+            std.fs.path.basename(filepath), // If we have files named the same in two different directories, this could be confusing.
+                                            // But. This is an old assembler for a processor that no one uses. I won't do it.
+            self.location.line,
+            self.location.column,
+        }) catch unreachable;
+    } else {
+        std.fmt.format(buf.writer(), "{}:{}: error: ", .{
+            self.location.line,
+            self.location.column,
+        }) catch unreachable;
     }
-    print("^\n", .{});
+    std.fmt.format(buf.writer(), error_fmt, error_args) catch unreachable;
+    buf.append('\n') catch unreachable;
+    std.fmt.format(buf.writer(), "\t{s}\n\t", .{self.line}) catch unreachable;
+    for (0 .. self.location.column - 1) |_| {
+        buf.append(' ') catch unreachable;
+    }
+    buf.append('^') catch unreachable;
+    buf.append('\n') catch unreachable;
 }
 
-
+pub fn finishError(self: *Self) void {
+    const error_copy = self.last_error.toOwnedSlice() catch unreachable;
+    self.errors.append(error_copy) catch unreachable;
+}
 
 const testing = std.testing;
 

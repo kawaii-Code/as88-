@@ -68,10 +68,22 @@ pub fn main() !void {
     defer render_arena.deinit();
 
     const program_source = common.readEntireFile(filepath, arena.allocator());
-    const assembled_program = try as88.assemble(.{
+    const assembled_program_or_errors = try as88.assemble(.{
         .filepath = filepath,
         .contents = program_source,
     }, &arena);
+    const assembled_program = switch (assembled_program_or_errors) {
+        .program => |program| program,
+        .errors => |errors| {
+            for (errors.items, 0..) |assembler_error, i| {
+                print("{s}", .{assembler_error});
+                if (i != errors.items.len - 1) {
+                    std.debug.print("\n", .{});
+                }
+            }
+            return;
+        },
+    };
 
     var tty = try vaxis.Tty.init();
     defer tty.deinit();
