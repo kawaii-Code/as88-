@@ -260,19 +260,21 @@ fn skipUntil(self: *Self, sentinel: u8) void {
 
 // Includes quotes, so, returns "abc" instead of abc
 fn skipStringLiteral(self: *Self) ?[]const u8 {
+    const start = self.location.end_byte;
     _ = self.next(); // skip opening '"'
     while (self.next()) |c| {
         if (c == '\\') {
             _ = self.next();
         } else if (c == '"') {
             // self.location.end_byte points to a character past the closing '"'
-            return self.file.text[self.location.start_byte .. self.location.end_byte];
+            return self.file.text[start .. self.location.end_byte];
         }
     }
     return null;
 }
 
 fn skipIdentifier(self: *Self) []const u8 {
+    const start = self.location.end_byte;
     while (self.peek()) |c| {
         if (isIdentifierChar(c)) {
             _ = self.next();
@@ -280,7 +282,7 @@ fn skipIdentifier(self: *Self) []const u8 {
             break;
         }
     }
-    return self.file.text[self.location.start_byte .. self.location.end_byte];
+    return self.file.text[start .. self.location.end_byte];
 }
 
 fn next(self: *Self) ?u8 {

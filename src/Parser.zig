@@ -34,9 +34,7 @@ pub const AstNode = union(enum) {
 };
 
 pub const DataFieldAstNode = struct {
-    // Not strict
     data_type: intel8088.asm_syntax.Directive,
-    size: u16,
     initializer: *ExpressionAstNode,
 };
 
@@ -87,7 +85,6 @@ const ParseState = enum {
     bss_section,
 };
 
-allocator: std.mem.Allocator,
 file: *as88.File,
 tokens: []Token,
 locations: []SourceLocation,
@@ -96,7 +93,6 @@ position: usize,
 pub fn parse(file: *as88.File) !void {
     var self = Self{
         .file = file,
-        .allocator = file.allocator,
         .tokens = file.tokens.items(.token),
         .locations = file.tokens.items(.location),
         .position = 0,
@@ -109,7 +105,8 @@ pub fn parse(file: *as88.File) !void {
             .directive => |directive| {
                 if (directive == .sect) {
                     _ = self.next();
-                    if (self.match(.directive)) |next_directive| {
+                    const directive_location = self.peekLocation();
+                    if (self.matchWithoutError(.directive)) |next_directive| {
                         if (next_directive.directive.isSectionType()) {
                             current_section = switch(next_directive.directive) {
                                 .text => .text_section,
@@ -118,46 +115,47 @@ pub fn parse(file: *as88.File) !void {
                                 else => unreachable,
                            };
                         } else {
-                            // TODO: Report error
-                            unreachable;
+                            self.file.errors.append(directive_location, "expected one of .TEXT, .DATA and .BSS after .SECT", .{});
+                            parsed_node = null;
                         }
                     } else {
-                        // TODO: Report error
-                        unreachable;
+                        self.file.errors.append(directive_location, "expected one of .TEXT, .DATA, .BSS after .SECT", .{});
+                        parsed_node = null;
                     }
                     _ = self.next();
                 } else if (directive.isMemoryDataType()) {
                     parsed_node = try self.parseDataField();
-                    print("emit data field {}\n\n", .{parsed_node.?});
                 } else {
-                    print("didn't expect directive '{}'\n", .{directive});
+                    self.file.errors.append(self.peekLocation(), "didn't expect directive '{}' here", .{directive});
                     _ = self.next();
-                    unreachable;
                 }
             },
-            .instruction_mnemonic => |_| {
-                parsed_node = try self.parseInstruction() orelse {
-                    // TODO: Report error
-                    unreachable;
-                };
-            },
-            .identifier => {
-                // TODO: This could lead to confusing errors when
-                // having typos, like MOB instead of MOV. Maybe check
-                // for an equal sign?
-                parsed_node = try self.parseConstant();
+            .instruction_mnemonic => parsed_node = try self.parseInstruction(),
+            .identifier => |identifier| {
+                if (self.peekN(1)) |maybe_equal| {
+                    if (maybe_equal == .equals_sign) {
+                        parsed_node = try self.parseConstant();
+                    } else {
+                        self.file.errors.append(self.peekLocation(), "stray identifier '{s}'", .{identifier});
+                        _ = self.next();
+                    }
+                } else {
+                    self.file.errors.append(self.peekLocation(), "stray identifier '{s}'", .{identifier});
+                    _ = self.next();
+                }
             },
             .newline => {
                 _ = self.next();
             },
             .label => {
-                parsed_node = try self.parseLabel();
+                parsed_node = self.parseLabel();
             },
             .comment => {
                 _ = self.next();
                 _ = self.match(.newline);
             },
             else => {
+                self.file.errors.append(self.peekLocation(), "stray token '{}'", .{token});
                 _ = self.next();
             },
         }
@@ -175,80 +173,48 @@ pub fn parse(file: *as88.File) !void {
 
 fn parseConstant(self: *Self) !?AstNode {
     const constant_name_token = self.next() orelse unreachable;
-    if (self.next()) |equals_token| {
-        if (equals_token != .equals_sign) {
-            // TODO: Report error
-            return null;
-        }
-
+    if (self.match(.equals_sign)) |_| {
         const initializer = (try self.parseExpression()) orelse return null;
         return .{ .constant = .{
             .name = constant_name_token.identifier,
             .initializer = initializer,
         } };
     } else {
-        // TODO: Report error
-        unreachable;
+        return null;
     }
 }
 
-fn parseLabel(self: *Self) !AstNode {
+fn parseLabel(self: *Self) AstNode {
     const label_name_token = self.next() orelse unreachable;
     std.debug.assert(label_name_token.is(.label));
-    return .{ .label = .{
-        .name = label_name_token.label,
-    } };
+    return .{
+        .label = .{
+            .name = label_name_token.label,
+        },
+    };
 }
 
-fn parseDataField(self: *Self) !AstNode {
+fn parseDataField(self: *Self) !?AstNode {
     const data_type_token = self.next() orelse unreachable;
     std.debug.assert(data_type_token.is(.directive));
 
     const data_type_directive = data_type_token.directive;
     if (data_type_directive.isMemoryDataType()) {
-        var size: u16 = 0;
-        var initializer: ?*ExpressionAstNode = null;
-        if (data_type_directive == .space) {
-            if (self.next()) |space_size| {
-                if (space_size.is(.number)) {
-                    const number = space_size.number;
-                    if (number < 0) {
-                        // TODO: Report error
-                        unreachable;
-                    }
-                    size = @as(u16, @intCast(space_size.number));
-                    // There shouldn't be an initializer, actually.
-                    // Or rather, it's space-sized zero filled string.
-                    initializer = try self.parseExpression();
-                } else {
-                    // TODO: Report error
-                    unreachable;
-                }
-            } else {
-                // TODO: Report error
-                unreachable;
-            }
-        } else if (data_type_directive.isStringDataType()) {
-            initializer = try self.parseExpression();
-            size = 0; // ???
-        } else {
-            size = data_type_directive.size();
-            initializer = try self.parseExpression();
-        }
-
+        const initializer = try self.parseExpression();
         if (initializer) |notnull_initializer| {
-            return .{ .data_field = .{
-                .data_type = data_type_directive,
-                .size = size,
-                .initializer = notnull_initializer,
-            } };
+            return .{
+                .data_field = .{
+                    .data_type = data_type_directive,
+                    .initializer = notnull_initializer,
+                },
+            };
         } else {
-            // TODO: Report error
-            unreachable;
+            return null;
         }
     } else {
-        // TODO: Report error
-        unreachable;
+        const location = self.peekLocationN(-1);
+        self.file.errors.append(location, "the directive {} is not a memory data type", .{data_type_directive});
+        return null;
     }
 }
 
@@ -257,25 +223,27 @@ fn parseInstruction(self: *Self) !?AstNode {
     const instruction_token = self.next() orelse unreachable;
     const description = intel8088.isa.get(instruction_token.instruction_mnemonic);
 
-    var operands = try self.allocator.alloc(*ExpressionAstNode, description.allowed_operands.len);
+    var operands = try self.file.allocator.alloc(*ExpressionAstNode, description.allowed_operands.len);
     for (0 .. description.allowed_operands.len) |i| {
+        const location = self.peekLocation();
         operands[i] = try self.parseExpression() orelse return null;
         if (i != description.allowed_operands.len - 1) {
             _ = self.match(.comma) orelse {
-                print("error({}:{}): expected a comma\n", .{
-                    instruction_location.line,
-                    instruction_location.column,
+                self.file.errors.append(location, "expected a comma, since instruction '{}' takes {} arguments\n", .{
+                    instruction_token.instruction_mnemonic,
+                    description.allowed_operands.len,
                 });
-                // TODO: Report error
-                unreachable;
+                _ = self.prev();
             };
         }
     }
-    return .{ .instruction = .{
-        .mnemonic = instruction_token.instruction_mnemonic,
-        .operands = operands,
-        .location = instruction_location,
-    } };
+    return .{
+        .instruction = .{
+            .mnemonic = instruction_token.instruction_mnemonic,
+            .operands = operands,
+            .location = instruction_location,
+        },
+    };
 }
 
 fn parseExpression(self: *Self) !?*ExpressionAstNode {
@@ -297,9 +265,10 @@ fn parseBinaryExpression(self: *Self, last_precedence: i32) !?*ExpressionAstNode
         }
 
         _ = self.next();
+        const location = self.peekLocation();
         const maybe_right = try self.parseBinaryExpression(precedence + 1);
         if (maybe_right) |right| {
-            const left = try self.allocator.create(ExpressionAstNode);
+            const left = try self.file.allocator.create(ExpressionAstNode);
             left.* = expression.*;
             expression.* = .{ .binary = .{
                 .left = left,
@@ -307,8 +276,8 @@ fn parseBinaryExpression(self: *Self, last_precedence: i32) !?*ExpressionAstNode
                 .operator = operator,
             } };
         } else {
-            // TODO: Report error
-            unreachable;
+            self.file.errors.append(location, "expected an expression to the right of {}\n", .{operator});
+            return null;
         }
     }
 
@@ -325,12 +294,15 @@ fn parseUnaryExpression(self: *Self) !?*ExpressionAstNode {
                 .minus => .minus,
                 else => unreachable,
             };
+            _ = self.next();
             const operand = try self.parseUnaryExpression() orelse return null;
-            const result = try self.allocator.create(ExpressionAstNode);
-            result.* = .{ .unary = .{
-                .operand = operand,
-                .operator = operator,
-            } };
+            const result = try self.file.allocator.create(ExpressionAstNode);
+            result.* = .{
+                .unary = .{
+                    .operand = operand,
+                    .operator = operator,
+                }
+            };
             return result;
         },
         else => {},
@@ -341,16 +313,16 @@ fn parseUnaryExpression(self: *Self) !?*ExpressionAstNode {
 
 fn parseAtom(self: *Self) !?*ExpressionAstNode {
     const current = self.next() orelse unreachable;
-    const result = try self.allocator.create(ExpressionAstNode);
+    const result = try self.file.allocator.create(ExpressionAstNode);
     result.* = switch (current) {
         .identifier => |identifier| .{ .value = .{ .identifier = identifier } },
         .register => |register| .{ .value = .{ .register = register } },
         .number => |number| .{ .value = .{ .word = number } },
-        // TODO: Zero out the ascii string. Not here though?
         .string => |string| .{ .value = .{ .string = string } },
         else => {
-            // TODO: Report error
-            unreachable;
+            const location = self.peekLocationN(-1);
+            self.file.errors.append(location, "'{}' can't be used in this context", .{current});
+            return null;
         },
     };
     return result;
@@ -378,6 +350,18 @@ fn match(self: *Self, expected: Token.Tag) ?Token {
     self.file.errors.append(self.peekLocationN(-1), "expected '{}', but found EOF\n", .{expected});
     return null;
 }
+
+fn matchWithoutError(self: *Self, expected: Token.Tag) ?Token {
+    if (self.next()) |token| {
+        if (token.is(expected)) {
+            return token;
+        } else {
+            return null;
+        }
+    }
+    return null;
+}
+
 
 fn next(self: *Self) ?Token {
     const result = self.peek();
@@ -409,225 +393,3 @@ fn peekLocationN(self: *const Self, n: isize) SourceLocation {
     const peek_position = @as(usize, @intCast(position_as_isize + n));
     return common.getOrNull(SourceLocation, self.locations, peek_position) orelse std.debug.panic("out of bounds", .{});
 }
-
-
-// The tokenizer is used in the tests instead of hardcoding
-// the tokens. This means that if there is an error in the tokenizer,
-// the parser tests would fail, which is confusing.
-//
-// But the tests get more readable, so this tradeoff was made.
-const testing = std.testing;
-
-// test "parses text section" {
-//     const shared_beginning = ".SECT .TEXT\n";
-//     const allocator = std.testing.allocator;
-//     var arena = std.heap.ArenaAllocator.init(allocator);
-//     defer arena.deinit();
-// 
-//     {
-//         const source = Tokenizer.ProgramSourceCode{
-//             .filepath = null,
-//             .contents = shared_beginning ++
-//                         \\  MOV AX, BX
-//         };
-// 
-//         const expected_instructions: []const Instruction = &.{
-//             .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .register = .bx } }, .location = .{ .line = 2, .column = 3 } },
-//         };
-// 
-//         const tokens = try Tokenizer.tokenize(source, &arena);
-//         const assembled_program = try parse(tokens, arena.allocator());
-// 
-//         try testing.expectEqualDeep(expected_instructions, assembled_program.instructions.items);
-//     }
-// }
-//  
-// test "parses compound expression" {
-//     const shared_beginning = ".SECT .TEXT\n";
-//     const allocator = std.testing.allocator;
-//     var arena = std.heap.ArenaAllocator.init(allocator);
-//     defer arena.deinit();
-// 
-//    {
-//         const source = Tokenizer.ProgramSourceCode{
-//             .filepath = null,
-//             .contents = shared_beginning ++
-//                         \\  MOV AX, 1 + 2
-//         };
-// 
-//         const expected_instructions: []const Instruction = &.{
-//             .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .immediate = 3 } }, .location = .{ .line = 2, .column = 3 } },
-//         };
-// 
-//         const tokens = try Tokenizer.tokenize(source, &arena);
-//         const assembled_program = try parse(tokens, arena.allocator());
-// 
-//         try testing.expectEqualDeep(expected_instructions, assembled_program.instructions.items);
-//     }
-//     
-//     {
-//         const source = Tokenizer.ProgramSourceCode{
-//             .filepath = null,
-//             .contents = shared_beginning ++
-//                 \\! Calculates length, excluding the zero terminator of the string "Hello"
-//                 \\MOV AX, after_hello - hello - 1
-//                 \\.SECT .DATA
-//                 \\hello: .ASCIZ "Hello"
-//                 \\after_hello: .WORD 0
-//         };
-//         
-//         const expected_labels = &[_]Label {
-//             .{ .memory_field = 0 },
-//             .{ .memory_field = 6 },
-//         };
-//         const expected_instructions: []const Instruction = &.{
-//             .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .immediate = 5 } }, .location = .{ .line = 3, .column = 1 } },
-//             //                                                                                ^^^^^^^^ :( I don't want this
-//         };
-//         
-//         const tokens = try Tokenizer.tokenize(source, &arena);
-//         const assembled_program = try parse(tokens, arena.allocator());
-//         
-//         const actual_labels = collectLabelsToOwnedSlice(&assembled_program.labels, allocator);
-//         defer allocator.free(actual_labels);
-// 
-//         try testing.expectEqualSlices(Label, expected_labels, actual_labels);
-//         try testing.expectEqualDeep(expected_instructions[0], assembled_program.instructions.items[0]);
-//     }
-// }
-// 
-// test "parses data section" {
-//     const shared_beginning = ".SECT .DATA\n";
-//     const allocator = std.testing.allocator;
-//     var arena = std.heap.ArenaAllocator.init(allocator);
-//     defer arena.deinit();
-// 
-//     {
-//         const source = Tokenizer.ProgramSourceCode{
-//             .filepath = null,
-//             .contents = shared_beginning ++
-//                         \\x:    .WORD   3
-//                         \\y:    .WORD   5
-//         };
-// 
-//         const expected_labels = &[_]Label {
-//             .{ .memory_field = 0 },
-//             .{ .memory_field = 2 },
-//         };
-// 
-//         const expected_memory = &[_][]const u8{
-//             &.{ 3, 0 },
-//             &.{ 5, 0 },
-//         };
-// 
-//         const tokens = try Tokenizer.tokenize(source, &arena);
-//         const assembled_program = try parse(tokens, arena.allocator());
-// 
-//         const actual_labels = collectLabelsToOwnedSlice(&assembled_program.labels, allocator);
-//         defer allocator.free(actual_labels);
-// 
-//         try testing.expectEqualSlices(Label, expected_labels, actual_labels);
-//         try testing.expectEqualDeep(expected_memory, assembled_program.memory.items);
-//     }
-// 
-//     {
-//         const source = Tokenizer.ProgramSourceCode{
-//             .filepath = null,
-//             .contents = shared_beginning ++
-//                         \\hello_world:  .ASCII "Hello, World!\n"
-//                         \\hello_world0:  .ASCIZ "Hello, World!\n"
-//         };
-// 
-//         // Label order is messed up because HashMap does not guarantee order:
-//         // https://ziglang.org/documentation/master/std/#std.hash_map.HashMap
-//         // I don't really care about order though, it's enough that the memory
-//         // pointers are correct. Order can be hardcoded, like here.
-//         const expected_labels = &[_]Label {
-//             .{ .memory_field = 14 },
-//             .{ .memory_field = 0 },
-//         };
-// 
-//         const expected_memory = &[_][]const u8{
-//             // I didn't do this by hand
-//             &.{72, 101, 108, 108, 111, 44, 32, 87, 111, 114, 108, 100, 33, 10 },
-//             &.{72, 101, 108, 108, 111, 44, 32, 87, 111, 114, 108, 100, 33, 10, 0},
-//         };
-//         
-//         const tokens = try Tokenizer.tokenize(source, &arena);
-//         const assembled_program = try parse(tokens, arena.allocator());
-// 
-//         const actual_labels = collectLabelsToOwnedSlice(&assembled_program.labels, allocator);
-//         defer allocator.free(actual_labels);
-// 
-//         try testing.expectEqualSlices(Label, expected_labels, actual_labels);
-//         try testing.expectEqualDeep(expected_memory, assembled_program.memory.items);
-//     }
-// }
-// 
-// test "parses bss section" {
-//     const shared_beginning = ".SECT .BSS\n";
-//     const allocator = std.testing.allocator;
-//     var arena = std.heap.ArenaAllocator.init(allocator);
-//     defer arena.deinit();
-// 
-//     {
-//         const source = Tokenizer.ProgramSourceCode{
-//             .filepath = null,
-//             .contents = shared_beginning ++
-//                         \\x:    .SPACE   7
-//         };
-// 
-//         const expected_labels = &[_]Label{
-//             .{ .memory_field = 0 },
-//         };
-// 
-//         const expected_memory = &[_][]const u8{
-//             &.{ 0, 0, 0, 0, 0, 0, 0 },
-//         };
-// 
-//         const tokens = try Tokenizer.tokenize(source, &arena);
-//         const assembled_program = try parse(tokens, arena.allocator());
-// 
-//         const actual_labels = collectLabelsToOwnedSlice(&assembled_program.labels, allocator);
-//         defer allocator.free(actual_labels);
-// 
-//         try testing.expectEqualSlices(Label, expected_labels, actual_labels);
-//         try testing.expectEqualDeep(expected_memory, assembled_program.memory.items);
-//     }
-// }
-// 
-// test "constant declarations work" {
-//     const allocator = std.testing.allocator;
-//     var arena = std.heap.ArenaAllocator.init(allocator);
-//     defer arena.deinit();
-// 
-//     {
-//         const source = Tokenizer.ProgramSourceCode{
-//             .filepath = null,
-//             .contents =
-//                 \\  _MY_VAR = 2
-//                 \\MOV   AX, _MY_VAR
-//         };
-// 
-//         const expected_instructions = &[_]Instruction{
-//             .{ .mnemonic = .mov, .operands = &.{ .{ .register = .ax }, .{ .immediate = 2 } }, .location = .{ .line = 2, .column = 1 } },
-//         };
-// 
-//         const tokens = try Tokenizer.tokenize(source, &arena);
-//         const assembled_program = try parse(tokens, arena.allocator());
-// 
-//         try testing.expectEqualDeep(expected_instructions, assembled_program.instructions.items);
-//     }
-// }
-// 
-// fn collectLabelsToOwnedSlice(hashmap: *const std.StringHashMap(Label), allocator: std.mem.Allocator) []Label {
-//     var result = allocator.alloc(Label, hashmap.count()) catch unreachable;
-//     
-//     var i: usize = 0;
-//     var value_it = hashmap.valueIterator();
-//     while (value_it.next()) |value| {
-//         result[i] = value.*;
-//         i += 1;
-//     }
-//     return result;
-// }

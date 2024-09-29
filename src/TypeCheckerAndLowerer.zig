@@ -107,8 +107,23 @@ pub fn selfTypeCheckAndFinalize(self: *Self, parse_result: *const Parser.Uncheck
                         result.value_ptr.* = .{ .memory_field = memory_address };
                     }
                 }
-                memory_address += data_field.size;
                 const value = try self.evaluateExpression(data_field.initializer);
+                const size = switch (data_field.data_type) {
+                    .word => 2,
+                    .byte => 1,
+                    .ascii => value.string.len,
+                    .asciz => value.string.len + 1,
+                    .space => blk: {
+                        const immediate = value.immediate;
+                        if (immediate < 0) {
+                            // TODO: Report error
+                            unreachable;
+                        }
+                        break :blk @as(usize, @intCast(value.immediate));
+                    },
+                    else => unreachable,
+                };
+                memory_address += @as(u16, @intCast(size));
                 try self.memory.append(switch (value) {
                     .register => unreachable, // TODO: Report error
                     .string => |string| string,

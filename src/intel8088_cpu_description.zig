@@ -180,13 +180,6 @@ pub const asm_syntax = struct {
             };
         }
     
-        pub fn isStringDataType(self: @This()) bool {
-            return switch (self) {
-                .ascii, .asciz => true,
-                else => false,
-            };
-        }
-    
         pub fn isSectionType(self: @This()) bool {
             return switch (self) {
                 .text, .data, .bss => true,

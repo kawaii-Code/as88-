@@ -54,10 +54,10 @@ pub fn assemble(
         .path = source.filepath,
         .text = source.contents,
         .tokens = std.MultiArrayList(TokenWithLocation){},
-        .ast = undefined,
+        .ast = UncheckedAst.init(allocator),
         .errors = undefined,
     };
-    file.errors = Errors.init(allocator, &file);
+    file.errors = Errors.init(&file);
 
     try Tokenizer.tokenize(&file);
 

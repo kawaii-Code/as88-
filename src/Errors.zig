@@ -1,17 +1,15 @@
 const std = @import("std");
 const as88 = @import("as88.zig");
 
-allocator: std.mem.Allocator,
 file: *as88.File,
 list: std.ArrayList([]const u8),
 last_error: std.ArrayList(u8),
 
-pub fn init(allocator: std.mem.Allocator, file: *as88.File) @This() {
+pub fn init(file: *as88.File) @This() {
     return @This() {
-        .allocator = allocator,
         .file = file,
-        .list = std.ArrayList([]const u8).init(allocator),
-        .last_error = std.ArrayList(u8).init(allocator),
+        .list = std.ArrayList([]const u8).init(file.allocator),
+        .last_error = std.ArrayList(u8).init(file.allocator),
     };
 }
 
@@ -55,7 +53,6 @@ pub fn addError(
             if (last_newline) |newline_index| {
                 break :init newline_index + 1;
             }
-            std.debug.print("returning 0\n", .{});
             break :init 0;
         };
         const offset_to_newline = std.mem.indexOfScalar(u8, self.file.text[location.start_byte..], '\n') orelse (self.file.text.len - location.start_byte);
