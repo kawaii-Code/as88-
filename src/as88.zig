@@ -20,33 +20,66 @@ pub const intel8088 = @import("intel8088_cpu_description.zig");
 pub const Tokenizer = @import("Tokenizer.zig");
 pub const Parser = @import("Parser.zig");
 pub const Emulator = @import("Emulator.zig");
+pub const Errors = @import("Errors.zig");
 pub const TypeCheckerAndLowerer = @import("TypeCheckerAndLowerer.zig");
 
 pub const AssembledProgram = TypeCheckerAndLowerer.AssembledProgram;
 pub const ProgramSourceCode = Tokenizer.ProgramSourceCode;
+pub const UncheckedAst = Parser.UncheckedAst;
+pub const TokenWithLocation = Tokenizer.TokenWithLocation;
+pub const SourceLocation = Tokenizer.SourceLocation;
 
 pub const AssembledProgramOrErrors = union(enum) {
     program: AssembledProgram,
     errors:  std.ArrayList([]const u8),
 };
 
+pub const File = struct {
+    allocator: std.mem.Allocator,
+    path: ?[]const u8,
+    text: []const u8,
+    tokens: std.MultiArrayList(TokenWithLocation),
+    ast: UncheckedAst,
+    errors: Errors,
+};
+
+
 pub fn assemble(
     source: ProgramSourceCode,
     arena: *std.heap.ArenaAllocator
 ) !AssembledProgramOrErrors {
-    var tokenizer = Tokenizer.init(arena);
-    try tokenizer.tokenize(source);
-    if (tokenizer.errors.items.len != 0) {
-        return .{ .errors = tokenizer.errors };
-    }
-    //for (0 .. tokens.slice().len) |i| {
-    //    const token = tokens.get(i);
-    //    print("({}:{}): {}\n", .{ token.location.line, token.location.column, token.token });
-    //}
+    const allocator = arena.allocator();
+    var file = File{
+        .allocator = allocator,
+        .path = source.filepath,
+        .text = source.contents,
+        .tokens = std.MultiArrayList(TokenWithLocation){},
+        .ast = undefined,
+        .errors = undefined,
+    };
+    file.errors = Errors.init(allocator, &file);
 
-    //print("---------------------------\n", .{});
-    const parse_result = try Parser.parse(tokenizer.tokens, arena.allocator());
-    const program = try TypeCheckerAndLowerer.typeCheckAndFinalize(&parse_result, arena.allocator());
+    try Tokenizer.tokenize(&file);
+
+
+    for (0 .. file.tokens.len) |i| {
+        const token_and_loc = file.tokens.get(i);
+        const token = token_and_loc.token;
+        const location = token_and_loc.location;
+        print("({}:{}): {}\n", .{ location.line, location.column, token });
+    }
+    print("---------------------------\n", .{});
+
+    if (file.errors.list.items.len != 0) {
+        return .{ .errors = file.errors.list };
+    }
+
+    try Parser.parse(&file);
+    if (file.errors.list.items.len != 0) {
+        return .{ .errors = file.errors.list };
+    }
+
+    const program = try TypeCheckerAndLowerer.typeCheckAndFinalize(&file.ast, arena.allocator());
     return .{ .program = program };
     //var label_it = parse_result.labels.valueIterator();
     //while (label_it.next()) |label| {

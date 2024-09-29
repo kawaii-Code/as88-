@@ -36,7 +36,7 @@ memory: std.ArrayList([]const u8),
 constants: std.StringHashMap(i16),
 labels: std.StringHashMap(Label),
 
-pub fn typeCheckAndFinalize(parse_result: *const Parser.ParseResult, allocator: std.mem.Allocator) !AssembledProgram {
+pub fn typeCheckAndFinalize(parse_result: *const Parser.UncheckedAst, allocator: std.mem.Allocator) !AssembledProgram {
     var type_checker = Self{
         .allocator = allocator,
         .labels = std.StringHashMap(Label).init(allocator),
@@ -55,7 +55,7 @@ pub fn typeCheckAndFinalize(parse_result: *const Parser.ParseResult, allocator: 
     };
 }
 
-pub fn selfTypeCheckAndFinalize(self: *Self, parse_result: *const Parser.ParseResult) !void {
+pub fn selfTypeCheckAndFinalize(self: *Self, parse_result: *const Parser.UncheckedAst) !void {
     // This is a temporary hack
     var ast = std.ArrayList(Parser.AstNode).init(self.allocator);
     for (parse_result.text_section.items) |node| {

@@ -1,4 +1,5 @@
 const std = @import("std");
+const as88 = @import("as88.zig");
 const common = @import("common.zig");
 const intel8088 = @import("intel8088_cpu_description.zig");
 const Tokenizer = @import("Tokenizer.zig");
@@ -8,6 +9,22 @@ const print = std.debug.print;
 const SourceLocation = Tokenizer.SourceLocation;
 
 const Self = @This();
+
+pub const UncheckedAst = struct {
+    outside_any_section: std.ArrayList(AstNode),
+    text_section: std.ArrayList(AstNode),
+    data_section: std.ArrayList(AstNode),
+    bss_section: std.ArrayList(AstNode),
+
+    pub fn init(allocator: std.mem.Allocator) @This() {
+        return @This() {
+            .outside_any_section = std.ArrayList(AstNode).init(allocator),
+            .text_section = std.ArrayList(AstNode).init(allocator),
+            .data_section = std.ArrayList(AstNode).init(allocator),
+            .bss_section = std.ArrayList(AstNode).init(allocator),
+        };
+    }
+};
 
 pub const AstNode = union(enum) {
     instruction: InstructionAstNode,
@@ -70,43 +87,29 @@ const ParseState = enum {
     bss_section,
 };
 
-
-pub const ParseResult = struct {
-    outside_any_section: std.ArrayList(AstNode),
-    text_section: std.ArrayList(AstNode),
-    data_section: std.ArrayList(AstNode),
-    bss_section: std.ArrayList(AstNode),
-};
-
 allocator: std.mem.Allocator,
+file: *as88.File,
 tokens: []Token,
 locations: []SourceLocation,
 position: usize,
 
-pub fn parse(
-    tokens: std.MultiArrayList(Tokenizer.TokenWithLocation),
-    allocator: std.mem.Allocator,
-) !ParseResult {
-    var parser = Self{
-        .allocator = allocator,
-        .tokens = tokens.items(.token),
-        .locations = tokens.items(.location),
+pub fn parse(file: *as88.File) !void {
+    var self = Self{
+        .file = file,
+        .allocator = file.allocator,
+        .tokens = file.tokens.items(.token),
+        .locations = file.tokens.items(.location),
         .position = 0,
     };
-    
-    var outside_any_section = std.ArrayList(AstNode).init(allocator);
-    var text_section = std.ArrayList(AstNode).init(allocator);
-    var data_section = std.ArrayList(AstNode).init(allocator);
-    var bss_section = std.ArrayList(AstNode).init(allocator);
 
     var current_section: intel8088.asm_syntax.Section = .no_section;
-    while (parser.peek()) |token| {
+    while (self.peek()) |token| {
         var parsed_node: ?AstNode = null;
         switch (token) {
             .directive => |directive| {
                 if (directive == .sect) {
-                    _ = parser.next();
-                    if (parser.match(.directive)) |next_directive| {
+                    _ = self.next();
+                    if (self.match(.directive)) |next_directive| {
                         if (next_directive.directive.isSectionType()) {
                             current_section = switch(next_directive.directive) {
                                 .text => .text_section,
@@ -122,18 +125,18 @@ pub fn parse(
                         // TODO: Report error
                         unreachable;
                     }
-                    _ = parser.next();
+                    _ = self.next();
                 } else if (directive.isMemoryDataType()) {
-                    parsed_node = try parser.parseDataField();
+                    parsed_node = try self.parseDataField();
                     print("emit data field {}\n\n", .{parsed_node.?});
                 } else {
                     print("didn't expect directive '{}'\n", .{directive});
-                    _ = parser.next();
+                    _ = self.next();
                     unreachable;
                 }
             },
             .instruction_mnemonic => |_| {
-                parsed_node = try parser.parseInstruction() orelse {
+                parsed_node = try self.parseInstruction() orelse {
                     // TODO: Report error
                     unreachable;
                 };
@@ -142,39 +145,32 @@ pub fn parse(
                 // TODO: This could lead to confusing errors when
                 // having typos, like MOB instead of MOV. Maybe check
                 // for an equal sign?
-                parsed_node = try parser.parseConstant();
+                parsed_node = try self.parseConstant();
             },
             .newline => {
-                _ = parser.next();
+                _ = self.next();
             },
             .label => {
-                parsed_node = try parser.parseLabel();
+                parsed_node = try self.parseLabel();
             },
             .comment => {
-                _ = parser.next();
-                _ = parser.match(.newline);
+                _ = self.next();
+                _ = self.match(.newline);
             },
             else => {
-                _ = parser.next();
+                _ = self.next();
             },
         }
         
         if (parsed_node) |node| {
             switch (current_section) {
-                .no_section => try outside_any_section.append(node),
-                .text_section => try text_section.append(node),
-                .data_section => try data_section.append(node),
-                .bss_section => try bss_section.append(node),
+                .no_section => try file.ast.outside_any_section.append(node),
+                .text_section => try file.ast.text_section.append(node),
+                .data_section => try file.ast.data_section.append(node),
+                .bss_section => try file.ast.bss_section.append(node),
             }
         }
     }
-
-    return ParseResult{
-        .outside_any_section = outside_any_section,
-        .text_section = text_section,
-        .data_section = data_section,
-        .bss_section = bss_section,
-    };
 }
 
 fn parseConstant(self: *Self) !?AstNode {
@@ -374,11 +370,12 @@ fn match(self: *Self, expected: Token.Tag) ?Token {
         if (token.is(expected)) {
             return token;
         } else {
-            self.reportError("expected '{}', but found '{}'\n", .{expected, token});
+            const previous_token_location = self.peekLocationN(-1);
+            self.file.errors.append(previous_token_location, "expected '{}', but found '{}'\n", .{expected, token});
             return null;
         }
     }
-    self.reportError("expected '{}'\n", .{expected});
+    self.file.errors.append(self.peekLocationN(-1), "expected '{}', but found EOF\n", .{expected});
     return null;
 }
 
@@ -398,20 +395,20 @@ fn peek(self: *const Self) ?Token {
     return self.peekN(0);
 }
 
-fn peekLocation(self: *const Self) SourceLocation {
-    return self.locations[self.position];
-}
-
 fn peekN(self: *const Self, n: usize) ?Token {
     return common.getOrNull(Token, self.tokens, self.position + n);
 }
 
-fn reportError(self: *Self, comptime fmt: []const u8, args: anytype) void {
-    _ = self;
-    print("error: ", .{});
-    print(fmt, args);
+fn peekLocation(self: *const Self) SourceLocation {
+    return common.getOrNull(SourceLocation, self.locations, self.position) orelse std.debug.panic("out of bounds", .{});
 }
 
+fn peekLocationN(self: *const Self, n: isize) SourceLocation {
+    // This is really annoying.
+    const position_as_isize = @as(isize, @intCast(self.position));
+    const peek_position = @as(usize, @intCast(position_as_isize + n));
+    return common.getOrNull(SourceLocation, self.locations, peek_position) orelse std.debug.panic("out of bounds", .{});
+}
 
 
 // The tokenizer is used in the tests instead of hardcoding
