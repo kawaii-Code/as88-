@@ -18,7 +18,7 @@ pub fn main() !void {
     const filepath = args[1];
     const source = common.readEntireFile(filepath, allocator);
     defer allocator.free(source);
-    
+
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     _ = try as88.assemble(.{

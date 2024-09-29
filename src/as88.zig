@@ -31,7 +31,7 @@ pub const SourceLocation = Tokenizer.SourceLocation;
 
 pub const AssembledProgramOrErrors = union(enum) {
     program: AssembledProgram,
-    errors:  std.ArrayList([]const u8),
+    errors: std.ArrayList([]const u8),
 };
 
 pub const File = struct {
@@ -43,26 +43,21 @@ pub const File = struct {
     errors: Errors,
 };
 
-
-pub fn assemble(
-    source: ProgramSourceCode,
-    arena: *std.heap.ArenaAllocator
-) !AssembledProgramOrErrors {
+pub fn assemble(source: ProgramSourceCode, arena: *std.heap.ArenaAllocator) !AssembledProgramOrErrors {
     const allocator = arena.allocator();
     var file = File{
         .allocator = allocator,
         .path = source.filepath,
         .text = source.contents,
         .tokens = std.MultiArrayList(TokenWithLocation){},
-        .ast = UncheckedAst.init(allocator),
+        .ast = UncheckedAst.init(),
         .errors = undefined,
     };
     file.errors = Errors.init(&file);
 
     try Tokenizer.tokenize(&file);
 
-
-    for (0 .. file.tokens.len) |i| {
+    for (0..file.tokens.len) |i| {
         const token_and_loc = file.tokens.get(i);
         const token = token_and_loc.token;
         const location = token_and_loc.location;
@@ -79,7 +74,11 @@ pub fn assemble(
         return .{ .errors = file.errors.list };
     }
 
-    const program = try TypeCheckerAndLowerer.typeCheckAndFinalize(&file.ast, arena.allocator());
+    const program = try TypeCheckerAndLowerer.typeCheckAndFinalize(&file);
+    if (file.errors.list.items.len != 0) {
+        return .{ .errors = file.errors.list };
+    }
+
     return .{ .program = program };
     //var label_it = parse_result.labels.valueIterator();
     //while (label_it.next()) |label| {

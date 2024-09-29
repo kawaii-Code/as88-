@@ -2,7 +2,6 @@ const std = @import("std");
 const common = @import("common.zig");
 const as88 = @import("as88.zig");
 
-
 const print = std.debug.print;
 
 pub fn main() !void {
@@ -21,7 +20,7 @@ pub fn main() !void {
     const filepath = args[1];
     const source = common.readEntireFile(filepath, allocator);
     defer allocator.free(source);
-    
+
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const assembled_program_or_errors = try as88.assemble(.{
@@ -32,7 +31,7 @@ pub fn main() !void {
         .program => |program| program,
         .errors => |errors| {
             for (errors.items, 0..) |assembler_error, i| {
-                std.debug.print("{s}", .{ assembler_error });
+                std.debug.print("{s}", .{assembler_error});
                 if (i != errors.items.len - 1) {
                     std.debug.print("\n", .{});
                 }
@@ -41,7 +40,6 @@ pub fn main() !void {
         },
     };
 
-    
     var emulator = try as88.Emulator.init(arena.allocator(), assembled_program);
     defer emulator.deinit();
     //print("{}\n\n", .{emulator});

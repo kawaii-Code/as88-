@@ -39,7 +39,7 @@ pub fn init(allocator: std.mem.Allocator, assembled_code: TypeCheckerAndLowerer.
     var memory_index: u32 = 0;
     for (assembled_code.memory.items) |memory_field| {
         // This will get more complicated
-        std.mem.copyForwards(u8, memory[memory_index .. ], memory_field);
+        std.mem.copyForwards(u8, memory[memory_index..], memory_field);
         memory_index += @as(u32, @intCast(memory_field.len));
     }
 
@@ -94,14 +94,14 @@ pub fn step(self: *@This()) !?std.ArrayList(Diff) {
             try self.store(.{ .memory = @as(u16, @bitCast(self.registers.get(.sp))) }, self.load(op1.?), diffs);
         },
         .pop => {
-            try self.store(op1.?, self.load(.{ .memory = @as(u16, @bitCast(self.registers.get(.sp)))}), diffs);
+            try self.store(op1.?, self.load(.{ .memory = @as(u16, @bitCast(self.registers.get(.sp))) }), diffs);
             try self.store(.{ .register = .sp }, self.load(.{ .register = .sp }) + 2, diffs);
         },
         .sys => {
             const syscall_index = self.loadFromStack(0);
             try self.doSyscall(@as(u16, @bitCast(syscall_index)));
         },
-        
+
         ////////////////////////
         // Arithmetic
         // TODO: AF, CF flags
@@ -175,16 +175,16 @@ pub fn step(self: *@This()) !?std.ArrayList(Diff) {
             try self.store(.{ .register = .dx }, @as(i16, @bitCast(@as(u16, @intCast(remainder)))), diffs);
         },
         .cwd => {
-            const ax = @as(u16, @bitCast(self.load(.{ .register = .ax })))  ;
+            const ax = @as(u16, @bitCast(self.load(.{ .register = .ax })));
             const extended_sign_bit = if (ax & 0x8000 == 0) std.bit_set.IntegerBitSet(16).initEmpty() else std.bit_set.IntegerBitSet(16).initFull();
             try self.store(.{ .register = .dx }, @as(i16, @bitCast(extended_sign_bit.mask)), diffs);
         },
     }
-    
+
     if (!did_jump) {
         try self.store(.{ .register = .ip }, self.load(.{ .register = .ip }) + 1, diffs);
     }
-    
+
     return diffs_actual;
 }
 
@@ -203,7 +203,7 @@ pub fn load(self: *const @This(), operand: intel8088.InstructionOperand) i16 {
     return switch (operand) {
         .immediate => |value| value,
         .register => |r| self.registers.get(r),
-            // TODO: logical <-> physical address conversion
+        // TODO: logical <-> physical address conversion
         .memory => |address| {
             return std.mem.bytesAsValue(i16, self.memory[address .. address + 2]).*;
         },
@@ -232,7 +232,7 @@ pub fn doSyscall(self: *@This(), syscall_number: usize) !void {
             const string_length = @as(u16, @bitCast(self.loadFromStack(6)));
 
             const string = self.memory[string_ptr .. string_ptr + string_length];
-            
+
             if (fd == fd_stdout) {
                 // This is a big, dirty hack, but I do not want to redirect
                 // file streams. So I guess it will stay like that.
@@ -294,7 +294,7 @@ pub fn store(self: *@This(), operand: intel8088.InstructionOperand, value: i16, 
     }
 
     try diffs.append(diff);
-    
+
     for (diffs.items) |d| {
         self.commit(d);
     }
@@ -336,10 +336,10 @@ fn applyToParent(self: *const @This(), child: intel8088.Register, value: i16) Di
     //    return self.registers.get(parent) & @shlExact(value, 8);
     //}
     //next_value
-    return Diff {
+    return Diff{
         .previous_value = self.registers.get(parent),
         .next_value = value,
-        .location = .{ .register = parent }, 
+        .location = .{ .register = parent },
     };
 }
 
@@ -351,7 +351,7 @@ fn applyToChild(self: *const @This(), child: intel8088.Register, value: i16) Dif
         next_value = @as(i16, @bitCast(@shrExact(@as(u16, @bitCast(value)) & 0xFF00, 8)));
     }
 
-    return Diff {
+    return Diff{
         .previous_value = self.registers.get(child),
         .next_value = next_value,
         .location = .{ .register = child },

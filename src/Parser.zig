@@ -11,19 +11,24 @@ const SourceLocation = Tokenizer.SourceLocation;
 const Self = @This();
 
 pub const UncheckedAst = struct {
-    outside_any_section: std.ArrayList(AstNode),
-    text_section: std.ArrayList(AstNode),
-    data_section: std.ArrayList(AstNode),
-    bss_section: std.ArrayList(AstNode),
+    outside_any_section: std.MultiArrayList(AstNodeWithLocation),
+    text_section: std.MultiArrayList(AstNodeWithLocation),
+    data_section: std.MultiArrayList(AstNodeWithLocation),
+    bss_section: std.MultiArrayList(AstNodeWithLocation),
 
-    pub fn init(allocator: std.mem.Allocator) @This() {
-        return @This() {
-            .outside_any_section = std.ArrayList(AstNode).init(allocator),
-            .text_section = std.ArrayList(AstNode).init(allocator),
-            .data_section = std.ArrayList(AstNode).init(allocator),
-            .bss_section = std.ArrayList(AstNode).init(allocator),
+    pub fn init() @This() {
+        return @This(){
+            .outside_any_section = std.MultiArrayList(AstNodeWithLocation){},
+            .text_section = std.MultiArrayList(AstNodeWithLocation){},
+            .data_section = std.MultiArrayList(AstNodeWithLocation){},
+            .bss_section = std.MultiArrayList(AstNodeWithLocation){},
         };
     }
+};
+
+pub const AstNodeWithLocation = struct {
+    node: AstNode,
+    location: SourceLocation,
 };
 
 pub const AstNode = union(enum) {
@@ -65,7 +70,7 @@ pub const ValueAstNode = union(enum) {
     identifier: []const u8,
     register: intel8088.Register,
     word: i16, // There are more variants, like unsigned word,
-               // byte and unsigned byte
+    // byte and unsigned byte
 };
 
 pub const InstructionAstNode = struct {
@@ -101,22 +106,21 @@ pub fn parse(file: *as88.File) !void {
     var current_section: intel8088.asm_syntax.Section = .no_section;
     while (self.peek()) |token| {
         var parsed_node: ?AstNode = null;
+        const start_location = self.peekLocation();
         switch (token) {
             .directive => |directive| {
                 if (directive == .sect) {
                     _ = self.next();
                     const directive_location = self.peekLocation();
                     if (self.matchWithoutError(.directive)) |next_directive| {
-                        if (next_directive.directive.isSectionType()) {
-                            current_section = switch(next_directive.directive) {
-                                .text => .text_section,
-                                .data => .data_section,
-                                .bss => .bss_section,
-                                else => unreachable,
-                           };
-                        } else {
-                            self.file.errors.append(directive_location, "expected one of .TEXT, .DATA and .BSS after .SECT", .{});
-                            parsed_node = null;
+                        switch (next_directive.directive) {
+                            .text => current_section = .text_section,
+                            .data => current_section = .data_section,
+                            .bss => current_section = .bss_section,
+                            else => {
+                                self.file.errors.append(directive_location, "expected one of .TEXT, .DATA and .BSS after .SECT", .{});
+                                parsed_node = null;
+                            },
                         }
                     } else {
                         self.file.errors.append(directive_location, "expected one of .TEXT, .DATA, .BSS after .SECT", .{});
@@ -159,13 +163,15 @@ pub fn parse(file: *as88.File) !void {
                 _ = self.next();
             },
         }
-        
+
         if (parsed_node) |node| {
+            const end_location = self.peekLocation();
+            const node_location = SourceLocation.combine(start_location, end_location);
             switch (current_section) {
-                .no_section => try file.ast.outside_any_section.append(node),
-                .text_section => try file.ast.text_section.append(node),
-                .data_section => try file.ast.data_section.append(node),
-                .bss_section => try file.ast.bss_section.append(node),
+                .no_section => try file.ast.outside_any_section.append(file.allocator, .{ .node = node, .location = node_location }),
+                .text_section => try file.ast.text_section.append(file.allocator, .{ .node = node, .location = node_location }),
+                .data_section => try file.ast.data_section.append(file.allocator, .{ .node = node, .location = node_location }),
+                .bss_section => try file.ast.bss_section.append(file.allocator, .{ .node = node, .location = node_location }),
             }
         }
     }
@@ -224,7 +230,7 @@ fn parseInstruction(self: *Self) !?AstNode {
     const description = intel8088.isa.get(instruction_token.instruction_mnemonic);
 
     var operands = try self.file.allocator.alloc(*ExpressionAstNode, description.allowed_operands.len);
-    for (0 .. description.allowed_operands.len) |i| {
+    for (0..description.allowed_operands.len) |i| {
         const location = self.peekLocation();
         operands[i] = try self.parseExpression() orelse return null;
         if (i != description.allowed_operands.len - 1) {
@@ -251,7 +257,7 @@ fn parseExpression(self: *Self) !?*ExpressionAstNode {
 }
 
 fn parseBinaryExpression(self: *Self, last_precedence: i32) !?*ExpressionAstNode {
-    const expression : *ExpressionAstNode = try self.parseUnaryExpression() orelse return null;
+    const expression: *ExpressionAstNode = try self.parseUnaryExpression() orelse return null;
     while (self.peek()) |token| {
         if (!token.isOperator()) {
             break;
@@ -297,12 +303,10 @@ fn parseUnaryExpression(self: *Self) !?*ExpressionAstNode {
             _ = self.next();
             const operand = try self.parseUnaryExpression() orelse return null;
             const result = try self.file.allocator.create(ExpressionAstNode);
-            result.* = .{
-                .unary = .{
-                    .operand = operand,
-                    .operator = operator,
-                }
-            };
+            result.* = .{ .unary = .{
+                .operand = operand,
+                .operator = operator,
+            } };
             return result;
         },
         else => {},
@@ -343,7 +347,7 @@ fn match(self: *Self, expected: Token.Tag) ?Token {
             return token;
         } else {
             const previous_token_location = self.peekLocationN(-1);
-            self.file.errors.append(previous_token_location, "expected '{}', but found '{}'\n", .{expected, token});
+            self.file.errors.append(previous_token_location, "expected '{}', but found '{}'\n", .{ expected, token });
             return null;
         }
     }
@@ -361,7 +365,6 @@ fn matchWithoutError(self: *Self, expected: Token.Tag) ?Token {
     }
     return null;
 }
-
 
 fn next(self: *Self) ?Token {
     const result = self.peek();

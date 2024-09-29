@@ -6,7 +6,7 @@ list: std.ArrayList([]const u8),
 last_error: std.ArrayList(u8),
 
 pub fn init(file: *as88.File) @This() {
-    return @This() {
+    return @This(){
         .file = file,
         .list = std.ArrayList([]const u8).init(file.allocator),
         .last_error = std.ArrayList(u8).init(file.allocator),
@@ -58,12 +58,12 @@ pub fn addError(
         const offset_to_newline = std.mem.indexOfScalar(u8, self.file.text[location.start_byte..], '\n') orelse (self.file.text.len - location.start_byte);
         const line = self.file.text[line_begin .. location.start_byte + offset_to_newline];
         std.fmt.format(buf.writer(), "\t{s}\n", .{line}) catch unreachable;
-        
+
         buf.append('\t') catch unreachable;
-        for (0 .. location.column - 1) |_| {
+        for (0..location.column - 1) |_| {
             buf.append(' ') catch unreachable;
         }
-        for (0 .. location.length()) |_| {
+        for (0..location.length()) |_| {
             buf.append('^') catch unreachable;
         }
         buf.append('\n') catch unreachable;

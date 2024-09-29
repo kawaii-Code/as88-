@@ -16,13 +16,13 @@ const Event = union(enum) {
 const border_connector_south_east_west = "┬";
 const border_connector_north_east_west = "┴";
 
-const default_style     = vaxis.Style{};
-const border_style      = vaxis.Style{ .fg = .{ .index = 8 } };
-const comment_style     = border_style;
+const default_style = vaxis.Style{};
+const border_style = vaxis.Style{ .fg = .{ .index = 8 } };
+const comment_style = border_style;
 const instruction_style = vaxis.Style{ .fg = .{ .index = 9 } };
-const section_style     = vaxis.Style{ .fg = .{ .index = 10 } };
-const immediate_style   = vaxis.Style{ .fg = .{ .index = 13 } };
-const register_style    = vaxis.Style{ .fg = .{ .index = 12 } };
+const section_style = vaxis.Style{ .fg = .{ .index = 10 } };
+const immediate_style = vaxis.Style{ .fg = .{ .index = 13 } };
+const register_style = vaxis.Style{ .fg = .{ .index = 12 } };
 
 const register_window_width = 24;
 const register_window_height = 10;
@@ -90,8 +90,8 @@ pub fn main() !void {
     var vx = try vaxis.init(allocator, .{});
     defer vx.deinit(allocator, tty.anyWriter());
     var loop: vaxis.Loop(Event) = .{
-      .tty = &tty,
-      .vaxis = &vx,
+        .tty = &tty,
+        .vaxis = &vx,
     };
     try loop.init();
     try loop.start();
@@ -117,18 +117,18 @@ pub fn main() !void {
     defer app.tracked.variables.deinit();
     defer app.command_input.deinit();
     var program = &app.program;
-    
+
     while (true) {
         const event = loop.nextEvent();
         switch (event) {
             .key_press => |key| {
                 if (key.matches(vaxis.Key.up, .{})) {
                     _ = try program.stepBackward();
-                }
-                else if (key.matches(vaxis.Key.down, .{})) {
+                } else if (key.matches(vaxis.Key.down, .{})) {
                     if (!(try program.stepForward())) {
                         // Program is done, exit main loop
-                        break;                    }
+                        break;
+                    }
                 } else if (key.matches(vaxis.Key.enter, .{})) {
                     const user_input = try app.command_input.toOwnedSlice();
                     if (std.mem.eql(u8, user_input, "q")) {
@@ -164,8 +164,6 @@ pub fn main() !void {
     }
 }
 
-
-
 pub fn draw(
     root_window: vaxis.Window,
     app: *App,
@@ -181,7 +179,7 @@ pub fn draw(
     const register_window = root_window.child(.{
         .x_off = 0,
         .y_off = 0,
-        .width =  .{ .limit = register_window_width },
+        .width = .{ .limit = register_window_width },
         .height = .{ .limit = register_window_height },
         .border = .{
             .where = .{ .other = .{ .right = true, .bottom = true } },
@@ -189,7 +187,7 @@ pub fn draw(
         },
     });
 
-    var registers = LinePrinter {
+    var registers = LinePrinter{
         .window = register_window,
         .line = 0,
         .line_width = register_window_width,
@@ -202,7 +200,7 @@ pub fn draw(
         const ss = @as(u16, @bitCast(program.emulator.registers.get(.ss)));
         const es = @as(u16, @bitCast(program.emulator.registers.get(.es)));
         std.debug.assert(ds == ss and ss == es);
-        try std.fmt.format(stream.writer(), "CS: {x:0>2}  DS=SS=ES: {x:0>3}", .{cs, ds});
+        try std.fmt.format(stream.writer(), "CS: {x:0>2}  DS=SS=ES: {x:0>3}", .{ cs, ds });
         registers.printLine(stream.buffer);
     }
     {
@@ -210,7 +208,7 @@ pub fn draw(
         const ah = @as(u16, @bitCast(program.emulator.registers.get(.ah)));
         const al = @as(u16, @bitCast(program.emulator.registers.get(.al)));
         const ax = @as(i16, @bitCast(program.emulator.registers.get(.ax)));
-        try std.fmt.format(stream.writer(), "AH:{x:0>2} AL:{x:0>2} AX:{d: >6}", .{ah, al, ax});
+        try std.fmt.format(stream.writer(), "AH:{x:0>2} AL:{x:0>2} AX:{d: >6}", .{ ah, al, ax });
         registers.printLine(stream.buffer);
     }
     {
@@ -218,7 +216,7 @@ pub fn draw(
         const bh = @as(u16, @bitCast(program.emulator.registers.get(.bh)));
         const bl = @as(u16, @bitCast(program.emulator.registers.get(.bl)));
         const bx = @as(i16, @bitCast(program.emulator.registers.get(.bx)));
-        try std.fmt.format(stream.writer(), "BH:{x:0>2} BL:{x:0>2} BX:{d: >6}", .{bh, bl, bx});
+        try std.fmt.format(stream.writer(), "BH:{x:0>2} BL:{x:0>2} BX:{d: >6}", .{ bh, bl, bx });
         registers.printLine(stream.buffer);
     }
     {
@@ -226,7 +224,7 @@ pub fn draw(
         const ch = @as(u16, @bitCast(program.emulator.registers.get(.ch)));
         const cl = @as(u16, @bitCast(program.emulator.registers.get(.cl)));
         const cx = @as(i16, @bitCast(program.emulator.registers.get(.cx)));
-        try std.fmt.format(stream.writer(), "CH:{x:0>2} CL:{x:0>2} CX:{d: >6}", .{ch, cl, cx});
+        try std.fmt.format(stream.writer(), "CH:{x:0>2} CL:{x:0>2} CX:{d: >6}", .{ ch, cl, cx });
         registers.printLine(stream.buffer);
     }
     {
@@ -234,7 +232,7 @@ pub fn draw(
         const dh = @as(u16, @bitCast(program.emulator.registers.get(.dh)));
         const dl = @as(u16, @bitCast(program.emulator.registers.get(.dl)));
         const dx = @as(i16, @bitCast(program.emulator.registers.get(.dx)));
-        try std.fmt.format(stream.writer(), "DH:{x:0>2} DL:{x:0>2} DX:{d: >6}", .{dh, dl, dx});
+        try std.fmt.format(stream.writer(), "DH:{x:0>2} DL:{x:0>2} DX:{d: >6}", .{ dh, dl, dx });
         registers.printLine(stream.buffer);
     }
     {
@@ -251,16 +249,14 @@ pub fn draw(
         const sf: u8 = if (program.emulator.flags.get(.sf)) 'n' else 'p';
         const zf: u8 = if (program.emulator.flags.get(.zf)) 'z' else '-';
         const cf: u8 = if (program.emulator.flags.get(.cf)) '?' else '-';
-        try std.fmt.format(stream.writer(), "BP: {x:0>4} CC {c} {c} {c} {c} {c}", .{
-            bp, of, df, sf, zf, cf
-        });
+        try std.fmt.format(stream.writer(), "BP: {x:0>4} CC {c} {c} {c} {c} {c}", .{ bp, of, df, sf, zf, cf });
         registers.printLine(stream.buffer);
     }
     {
         var stream = try registers.stream();
         const si = @as(u16, @bitCast(program.emulator.registers.get(.si)));
         const ip = @as(u16, @bitCast(program.emulator.registers.get(.ip)));
-        try std.fmt.format(stream.writer(), "SI: {x:0>4}  IP:{x:0>4}:PC ", .{si, ip});
+        try std.fmt.format(stream.writer(), "SI: {x:0>4}  IP:{x:0>4}:PC ", .{ si, ip });
         registers.printLine(stream.buffer);
     }
     {
@@ -269,18 +265,18 @@ pub fn draw(
         try std.fmt.format(stream.writer(), "DI: {x:0>4} .TEXT+0     ", .{di});
         registers.printLine(stream.buffer);
     }
-    
+
     // Draw stack window
     {
         const stack_window = root_window.child(.{
             .x_off = register_window_width,
             .y_off = 0,
-            .width =  .{ .limit = stack_window_width },
+            .width = .{ .limit = stack_window_width },
             .height = .{ .limit = stack_window_height },
             .border = .{ .style = border_style, .where = .bottom },
         });
-        
-        var line_printer = LinePrinter {
+
+        var line_printer = LinePrinter{
             .window = stack_window,
             .line = 0,
             .line_width = 5,
@@ -291,7 +287,7 @@ pub fn draw(
         if (stack_top > 32) {
             stack_top = 32;
         }
-        for (0 .. stack_window_height - 1) |_| {
+        for (0..stack_window_height - 1) |_| {
             stack_top -= 2;
             const value = @as(u16, @bitCast(program.emulator.load(.{ .memory = stack_top })));
             var stream = try line_printer.stream();
@@ -300,11 +296,11 @@ pub fn draw(
             if (sp - 2 == stack_top) {
                 // Draw arrow
                 root_window.writeCell(stack_window.x_off - 1, stack_window.y_off + line_printer.line - 1, .{ .char = .{ .grapheme = "=" }, .style = border_style });
-                root_window.writeCell(stack_window.x_off,     stack_window.y_off + line_printer.line - 1, .{ .char = .{ .grapheme = ">" }, .style = border_style });
+                root_window.writeCell(stack_window.x_off, stack_window.y_off + line_printer.line - 1, .{ .char = .{ .grapheme = ">" }, .style = border_style });
             }
         }
     }
-    
+
     // Draw code window
     {
         const code_window = root_window.child(.{
@@ -319,18 +315,18 @@ pub fn draw(
         });
         const top_line = std.math.sub(usize, program.line_in_source + 2, code_window_height) catch 0;
         const bottom_line = @min(top_line + code_window_height, program.source_lines.len - 1);
-        for (top_line .. bottom_line, 0 ..) |i, j| {
+        for (top_line..bottom_line, 0..) |i, j| {
             const line = program.source_lines[i];
             if (i == program.line_in_source) {
                 root_window.writeCell(code_window.x_off - 1, code_window.y_off + j - 1, .{ .char = .{ .grapheme = "=" }, .style = border_style });
                 root_window.writeCell(code_window.x_off, code_window.y_off + j - 1, .{ .char = .{ .grapheme = ">" }, .style = border_style });
             }
-            
+
             var column: usize = 1;
             var token_it = std.mem.tokenizeAny(u8, line, " \t");
             while (token_it.next()) |token| {
                 if (std.mem.startsWith(u8, token, "!")) {
-                    const segment = vaxis.Segment { .text = line[column - 1 .. line.len], .style = comment_style, .link = .{} };
+                    const segment = vaxis.Segment{ .text = line[column - 1 .. line.len], .style = comment_style, .link = .{} };
                     _ = try code_window.printSegment(segment, .{
                         .row_offset = j,
                         .col_offset = column,
@@ -339,7 +335,7 @@ pub fn draw(
                 }
                 // TODO: Handle wrapping
                 const style = highlightFor(token);
-                const segment = vaxis.Segment { .text = token, .style = style, .link = .{} };
+                const segment = vaxis.Segment{ .text = token, .style = style, .link = .{} };
                 const print_result = try code_window.printSegment(segment, .{
                     .row_offset = j,
                     .col_offset = column,
@@ -352,11 +348,11 @@ pub fn draw(
             }
         }
     }
-    
+
     const command_window = root_window.child(.{
         .x_off = 0,
         .y_off = command_window_y,
-        .width =  .{ .limit = command_window_width },
+        .width = .{ .limit = command_window_width },
         .height = .{ .limit = command_window_height },
         .border = .{
             .where = .{ .other = .{ .right = true, .bottom = true } },
@@ -377,8 +373,7 @@ pub fn draw(
         .height = .expand,
     });
     command_input.draw(command_prompt);
-    
-    
+
     // Draw tracked variables
     {
         const tracked_variables_window = root_window.child(.{
@@ -386,9 +381,9 @@ pub fn draw(
             .y_off = tracked_variables_window_y,
             .width = .expand,
             .height = .expand,
-            .border = .{ },
+            .border = .{},
         });
-        var line_printer = LinePrinter {
+        var line_printer = LinePrinter{
             .window = tracked_variables_window,
             .line = 0,
             .line_width = 140, // TODO: arbitrary. A long variable name could cause out of memory.
@@ -414,8 +409,8 @@ pub fn draw(
                     result[7] = @truncate(bytes4 >> 8);
                     break :init result;
                 };
-                
-                try std.fmt.format(stream.writer(), "{s} {d:>6}  ={x:0>4}: ", .{tracked, @as(i16, @bitCast(bytes1)), label.memory_field});
+
+                try std.fmt.format(stream.writer(), "{s} {d:>6}  ={x:0>4}: ", .{ tracked, @as(i16, @bitCast(bytes1)), label.memory_field });
                 try std.fmt.format(stream.writer(), "{x:0>2} {x:0>2} {x:0>2} {x:0>2} {x:0>2} {x:0>2} {x:0>2} {x:0>2} ", .{
                     bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
                 });
@@ -426,12 +421,12 @@ pub fn draw(
                     }
                     try std.fmt.format(stream.writer(), "' ", .{});
                 }
-                try std.fmt.format(stream.writer(), "{d:>4} {d:>4} {d:>4} {d:>4}", .{bytes1, bytes2, bytes3, bytes4});
+                try std.fmt.format(stream.writer(), "{d:>4} {d:>4} {d:>4} {d:>4}", .{ bytes1, bytes2, bytes3, bytes4 });
                 line_printer.printLine(stream.buffer);
             }
         }
     }
-    
+
     // Draw output window
     {
         const output_window = root_window.child(.{
@@ -441,7 +436,7 @@ pub fn draw(
             .height = .{ .limit = output_window_height },
             .border = .{ .where = .bottom, .style = border_style },
         });
-        
+
         // Hack. See comment in Emulator.zig
         // Could make a diff that has stdout. It's better
         // because undo becomes possible.
@@ -449,7 +444,7 @@ pub fn draw(
             app.output_buffer.append(line);
             program.emulator.latest_stdout = null;
         }
-        
+
         for (app.output_buffer.buffer, 0..) |line, i| {
             const segment = plainTextSegment(line);
             _ = try output_window.printSegment(segment, .{
@@ -457,29 +452,13 @@ pub fn draw(
             });
         }
     }
-    
+
     // Write window connectors for prettiness. Would be interesting
     // if vaxis did it.
-    root_window.writeCell(
-        command_window_width - 1,
-        register_window_height - 1,
-        .{ .char = .{ .grapheme = border_connector_south_east_west }, .style = border_style }
-    );
-    root_window.writeCell(
-        register_window_width - 1,
-        register_window_height - 1,
-        .{ .char = .{ .grapheme = border_connector_north_east_west }, .style = border_style }
-    );
-    root_window.writeCell(
-        register_window_width + stack_window_width,
-        register_window_height - 1,
-        .{ .char = .{ .grapheme = border_connector_north_east_west }, .style = border_style }
-    );
-    root_window.writeCell(
-        command_window_width - 1,
-        output_window_y + output_window_height - 1,
-        .{ .char = .{ .grapheme = border_connector_north_east_west }, .style = border_style }
-    );
+    root_window.writeCell(command_window_width - 1, register_window_height - 1, .{ .char = .{ .grapheme = border_connector_south_east_west }, .style = border_style });
+    root_window.writeCell(register_window_width - 1, register_window_height - 1, .{ .char = .{ .grapheme = border_connector_north_east_west }, .style = border_style });
+    root_window.writeCell(register_window_width + stack_window_width, register_window_height - 1, .{ .char = .{ .grapheme = border_connector_north_east_west }, .style = border_style });
+    root_window.writeCell(command_window_width - 1, output_window_y + output_window_height - 1, .{ .char = .{ .grapheme = border_connector_north_east_west }, .style = border_style });
 }
 
 const RunningProgram = struct {
@@ -539,7 +518,7 @@ const LinePrinter = struct {
     line: usize,
     line_width: usize,
     allocator: std.mem.Allocator,
-    
+
     pub fn stream(self: @This()) !std.io.FixedBufferStream([]u8) {
         const buf = try self.allocator.alloc(u8, self.line_width);
         @memset(buf, ' ');
@@ -547,7 +526,7 @@ const LinePrinter = struct {
         _ = result.write(" ") catch unreachable;
         return result;
     }
-    
+
     pub fn printLine(self: *@This(), text: []u8) void {
         const segment = plainTextSegment(text);
         _ = try self.window.printSegment(segment, .{
@@ -561,18 +540,18 @@ const LinePrinter = struct {
 fn FixedAppendOnlyQueue(comptime T: type, comptime size: usize) type {
     return struct {
         buffer: [size][]const u8,
-        
+
         pub fn initFill(value: T) @This() {
-            var result = @This() { .buffer = undefined };
-            for (0 .. size) |i| {
+            var result = @This(){ .buffer = undefined };
+            for (0..size) |i| {
                 // Creepy, but this code doesn't matter in the slightest
                 result.buffer[i] = value;
             }
             return result;
         }
-        
+
         pub fn append(self: *@This(), item: T) void {
-            for (1 .. size) |i| {
+            for (1..size) |i| {
                 self.buffer[i - 1] = self.buffer[i];
             }
             self.buffer[size - 1] = item;
@@ -586,15 +565,15 @@ const PreviousCommandsBuffer = struct {
     buffer: [Size][]const u8,
 
     pub fn init() @This() {
-        var result = @This() { .buffer = undefined };
-        for (0 .. Size) |i| {
+        var result = @This(){ .buffer = undefined };
+        for (0..Size) |i| {
             result.buffer[i] = "";
         }
         return result;
     }
 
     pub fn add(self: *@This(), command: []const u8) void {
-        for (1 .. Size) |i| {
+        for (1..Size) |i| {
             self.buffer[i - 1] = self.buffer[i];
         }
         self.buffer[Size - 1] = command;
@@ -616,7 +595,7 @@ fn splitToLinesAlloc(source_text: []const u8, allocator: std.mem.Allocator) ![][
         result[i] = line_copy;
         i += 1;
     }
-    
+
     return result;
 }
 
@@ -631,7 +610,7 @@ fn highlightFor(token: []const u8) vaxis.Style {
         return immediate_style;
     } else {
         return default_style;
-    } 
+    }
 }
 
 fn plainTextSegment(text: []const u8) vaxis.Segment {

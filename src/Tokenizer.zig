@@ -28,12 +28,12 @@ pub const Token = union(enum) {
     left_paren,
     right_paren,
     equals_sign,
-    
+
     plus,
     minus,
     star,
     forward_slash,
-    
+
     comment,
     label: []const u8,
     string: []const u8,
@@ -55,7 +55,7 @@ pub const Token = union(enum) {
     }
 
     pub fn toBinaryOperator(self: @This()) intel8088.asm_syntax.BinaryOperator {
-        return switch(self) {
+        return switch (self) {
             .plus => .plus,
             .minus => .minus,
             .star => .multiply,
@@ -77,6 +77,15 @@ pub const SourceLocation = struct {
     column: usize,
     start_byte: usize,
     end_byte: usize,
+
+    pub fn combine(from: @This(), to: @This()) @This() {
+        return .{
+            .line = from.line,
+            .column = from.column,
+            .start_byte = from.start_byte,
+            .end_byte = to.end_byte,
+        };
+    }
 
     pub fn length(self: @This()) usize {
         std.debug.assert(self.end_byte >= self.start_byte);
@@ -104,13 +113,12 @@ pub fn tokenize(file: *as88.File) !void {
 
     var line_it = std.mem.splitScalar(u8, file.text, '\n');
     while (line_it.next()) |line| : ({
-            self.location.line += 1;
-            self.location.column = 1;
+        self.location.line += 1;
+        self.location.column = 1;
     }) {
         self.line = line;
 
-        while (self.peek()) |c| :({
-        }) {
+        while (self.peek()) |c| : ({}) {
             if (self.nextToken(c)) |token| {
                 try tokens.append(allocator, .{
                     .token = token,
@@ -123,7 +131,7 @@ pub fn tokenize(file: *as88.File) !void {
                     break;
                 }
             }
-            
+
             self.location.column += self.location.length();
             self.location.start_byte = self.location.end_byte;
         }
@@ -132,16 +140,46 @@ pub fn tokenize(file: *as88.File) !void {
 
 fn nextToken(self: *Self, c: u8) ?Token {
     switch (c) {
-        ',' => { _ = self.next(); return .comma; },
-        '(' => { _ = self.next(); return .left_paren; },
-        ')' => { _ = self.next(); return .right_paren; },
-        ';' => { _ = self.next(); return .semicolon; },
-        '+' => { _ = self.next(); return .plus; },
-        '*' => { _ = self.next(); return .star; },
-        '=' => { _ = self.next(); return .equals_sign; },
-        '/' => { _ = self.next(); return .forward_slash; },
-        '\n' => { _ = self.next(); return .newline; },
-        '!' => { self.skipUntil('\n'); return .comment; },
+        ',' => {
+            _ = self.next();
+            return .comma;
+        },
+        '(' => {
+            _ = self.next();
+            return .left_paren;
+        },
+        ')' => {
+            _ = self.next();
+            return .right_paren;
+        },
+        ';' => {
+            _ = self.next();
+            return .semicolon;
+        },
+        '+' => {
+            _ = self.next();
+            return .plus;
+        },
+        '*' => {
+            _ = self.next();
+            return .star;
+        },
+        '=' => {
+            _ = self.next();
+            return .equals_sign;
+        },
+        '/' => {
+            _ = self.next();
+            return .forward_slash;
+        },
+        '\n' => {
+            _ = self.next();
+            return .newline;
+        },
+        '!' => {
+            self.skipUntil('\n');
+            return .comment;
+        },
         ':' => {
             self.file.errors.addError(self.location, "Unexpected ':'", .{});
             self.file.errors.addNote("':' can only follow an identifier, e.g. `L1:`", .{});
@@ -170,7 +208,7 @@ fn nextToken(self: *Self, c: u8) ?Token {
                     self.file.errors.commit();
                 },
             }
-            
+
             return null;
         },
         'a'...'z', 'A'...'Z', '_' => {
@@ -267,7 +305,7 @@ fn skipStringLiteral(self: *Self) ?[]const u8 {
             _ = self.next();
         } else if (c == '"') {
             // self.location.end_byte points to a character past the closing '"'
-            return self.file.text[start .. self.location.end_byte];
+            return self.file.text[start..self.location.end_byte];
         }
     }
     return null;
@@ -282,7 +320,7 @@ fn skipIdentifier(self: *Self) []const u8 {
             break;
         }
     }
-    return self.file.text[start .. self.location.end_byte];
+    return self.file.text[start..self.location.end_byte];
 }
 
 fn next(self: *Self) ?u8 {
@@ -304,13 +342,11 @@ const testing = std.testing;
 test "tokenize labels" {
     const allocator = std.testing.allocator;
     {
-        const source = ProgramSourceCode{
-            .filepath = null,
-            .contents =
-                \\L1:
-                \\L2: long_label_identifier:
+        const source = ProgramSourceCode{ .filepath = null, .contents = 
+        \\L1:
+        \\L2: long_label_identifier:
         };
-        
+
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const actual_tokens = (try tokenize(source, &arena)).items(.token);
@@ -326,12 +362,10 @@ test "tokenize labels" {
 test "tokenize string literals" {
     const allocator = std.testing.allocator;
     {
-        const source = ProgramSourceCode{
-            .filepath = null,
-            .contents =
-                \\"Hello, World!\n"
+        const source = ProgramSourceCode{ .filepath = null, .contents = 
+        \\"Hello, World!\n"
         };
-        
+
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         var actual_tokens = try tokenize(source, &arena);
@@ -339,84 +373,71 @@ test "tokenize string literals" {
         const token = actual_tokens.items(.token)[0];
         try expectStringToken("Hello, World!\n", token);
     }
-    
+
     {
-        const source = ProgramSourceCode{
-            .filepath = null,
-            .contents =
-            \\".SECT .TEXT MOV AX, BX;"
-            \\.SECT ".SECT"
+        const source = ProgramSourceCode{ .filepath = null, .contents = 
+        \\".SECT .TEXT MOV AX, BX;"
+        \\.SECT ".SECT"
         };
-        
+
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         var actual_tokens = try tokenize(source, &arena);
-        
+
         try expectStringToken(".SECT .TEXT MOV AX, BX;", actual_tokens.items(.token)[0]);
         try testing.expectEqual(Token.newline, actual_tokens.items(.token)[1]);
         try testing.expectEqual(Token{ .directive = .sect }, actual_tokens.items(.token)[2]);
         try expectStringToken(".SECT", actual_tokens.items(.token)[3]);
     }
-    
+
     {
-        const source = ProgramSourceCode{
-            .filepath = null,
-            .contents =
-            \\"\""
+        const source = ProgramSourceCode{ .filepath = null, .contents = 
+        \\"\""
         };
-        
+
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         var actual_tokens = try tokenize(source, &arena);
-        
+
         try expectStringToken("\"", actual_tokens.items(.token)[0]);
     }
-    
+
     {
-        const source = ProgramSourceCode{
-            .filepath = null,
-            .contents =
-                \\"newline - \n, tab - \t, backslash - \\, quote - \", escaped quote - \\\", single quote - '"
+        const source = ProgramSourceCode{ .filepath = null, .contents = 
+        \\"newline - \n, tab - \t, backslash - \\, quote - \", escaped quote - \\\", single quote - '"
         };
-        
+
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         var actual_tokens = try tokenize(source, &arena);
 
-        try expectStringToken(
-            "newline - \n, tab - \t, backslash - \\, quote - \", escaped quote - \\\", single quote - '",
-            actual_tokens.items(.token)[0]
-        );
+        try expectStringToken("newline - \n, tab - \t, backslash - \\, quote - \", escaped quote - \\\", single quote - '", actual_tokens.items(.token)[0]);
     }
-
 }
-
 
 test "tokenize simple source file" {
     const allocator = std.testing.allocator;
-    const source = ProgramSourceCode{
-        .filepath = null,
-        .contents = 
-            \\! Comment
-            \\.SECT .TEXT
-            \\  MOV AX, 3
-            \\  ADD BX, 4
+    const source = ProgramSourceCode{ .filepath = null, .contents = 
+    \\! Comment
+    \\.SECT .TEXT
+    \\  MOV AX, 3
+    \\  ADD BX, 4
     };
 
-    const expected_tokens = [_]Token {
+    const expected_tokens = [_]Token{
         .comment,
         .newline,
-        
+
         .{ .directive = .sect },
         .{ .directive = .text },
         .newline,
-        
+
         .{ .instruction_mnemonic = .mov },
         .{ .register = .ax },
         .comma,
         .{ .number = 3 },
         .newline,
-        
+
         .{ .instruction_mnemonic = .add },
         .{ .register = .bx },
         .comma,
@@ -435,11 +456,11 @@ test "tokenizes a compound expression" {
     const allocator = std.testing.allocator;
     const source = ProgramSourceCode{
         .filepath = null,
-        .contents = 
-            // This won't compile, but makes a good tokenizer test
-            \\MOV AX - 2 / 2, 3 * 5 + (my_label)
+        .contents =
+        // This won't compile, but makes a good tokenizer test
+        \\MOV AX - 2 / 2, 3 * 5 + (my_label)
     };
-    const expected_tokens = [_]Token {
+    const expected_tokens = [_]Token{
         .{ .instruction_mnemonic = .mov },
         .{ .register = .ax },
         .minus,
@@ -447,7 +468,7 @@ test "tokenizes a compound expression" {
         .forward_slash,
         .{ .number = 2 },
         .comma,
-        
+
         .{ .number = 3 },
         .star,
         .{ .number = 5 },
@@ -455,10 +476,10 @@ test "tokenizes a compound expression" {
         .left_paren,
         .{ .identifier = "my_label" },
         .right_paren,
-        
+
         .newline,
     };
-    
+
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     var actual_tokens = try tokenize(source, &arena);
@@ -468,25 +489,23 @@ test "tokenizes a compound expression" {
 
 test "tokenizes a constant declaration and a label" {
     const allocator = std.testing.allocator;
-    const source = ProgramSourceCode{
-        .filepath = null,
-        .contents = 
-            \\  _MY_VAR = 2
-            \\MOV   AX, _MY_VAR
+    const source = ProgramSourceCode{ .filepath = null, .contents = 
+    \\  _MY_VAR = 2
+    \\MOV   AX, _MY_VAR
     };
-    const expected_tokens = [_]Token {
+    const expected_tokens = [_]Token{
         .{ .identifier = "_MY_VAR" },
         .equals_sign,
         .{ .number = 2 },
         .newline,
-        
+
         .{ .instruction_mnemonic = .mov },
         .{ .register = .ax },
         .comma,
         .{ .identifier = "_MY_VAR" },
         .newline,
     };
-    
+
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     var actual_tokens = try tokenize(source, &arena);

@@ -21,7 +21,7 @@ pub const InstructionMnemonic = enum {
     imul,
     div,
     idiv,
-    
+
     cwd,
 };
 
@@ -35,10 +35,18 @@ pub const Register = enum {
     pub const Names = common.EnumMemberNamesToStrings(@This()).init();
 
     // General purpose registers
-    ax,  ah, al,
-    bx,  bh, bl,
-    cx,  ch, cl,
-    dx,  dh, dl,
+    ax,
+    ah,
+    al,
+    bx,
+    bh,
+    bl,
+    cx,
+    ch,
+    cl,
+    dx,
+    dh,
+    dl,
 
     // Segment registers
     cs,
@@ -57,12 +65,11 @@ pub const Register = enum {
 
     pub fn is8Bit(self: @This()) bool {
         return switch (self) {
-            .ah, .al, .bh, .bl,
-            .ch, .cl, .dh, .dl => true,
+            .ah, .al, .bh, .bl, .ch, .cl, .dh, .dl => true,
             else => false,
         };
     }
-    
+
     pub fn parent(self: @This()) Register {
         return switch (self) {
             .ah, .al => .ax,
@@ -79,7 +86,7 @@ pub const Register = enum {
             else => false,
         };
     }
-    
+
     pub fn children(self: @This()) [2]Register {
         return switch (self) {
             .ax => .{ .ah, .al },
@@ -91,7 +98,7 @@ pub const Register = enum {
     }
 
     pub fn isLow(self: @This()) bool {
-        return switch(self) {
+        return switch (self) {
             .al, .bl, .cl, .dl => true,
             .ah, .bh, .ch, .dh => false,
             else => unreachable,
@@ -100,19 +107,50 @@ pub const Register = enum {
 };
 
 pub const Flag = enum {
-    tf, df, @"if",
-    of, sf, zf, af, pf, cf,  
+    tf,
+    df,
+    @"if",
+    of,
+    sf,
+    zf,
+    af,
+    pf,
+    cf,
 };
 
 pub const InstructionDescription = struct {
     allowed_operands: []const AllowedOperands = &.{},
 };
 
-pub const AllowedOperands = std.EnumSet(enum {
+pub const OperandType = enum {
     immediate,
     register,
     memory,
-});
+
+    pub fn toString(self: @This()) []const u8 {
+        return switch (self) {
+            .immediate => "immediate",
+            .register => "register",
+            .memory => "memory",
+        };
+    }
+
+    pub fn toHumanReadable(buf: []u8, set: std.EnumSet(OperandType)) void {
+        var writer = std.io.fixedBufferStream(buf);
+        var it = set.iterator();
+        var first = true;
+        while (it.next()) |value| {
+            if (first) {
+                first = false;
+            } else {
+                _ = writer.write(", ") catch unreachable;
+            }
+            _ = writer.write(value.toString()) catch unreachable;
+        }
+    }
+};
+
+pub const AllowedOperands = std.EnumSet(OperandType);
 
 pub const asm_syntax = struct {
     pub const BinaryOperator = enum {
@@ -154,7 +192,7 @@ pub const asm_syntax = struct {
             std.debug.assert(self.hasASize());
             return switch (self) {
                 .word => 2,
-                .byte => 1,  
+                .byte => 1,
                 else => unreachable,
             };
         }
@@ -175,15 +213,8 @@ pub const asm_syntax = struct {
 
         pub fn isMemoryDataType(self: @This()) bool {
             return switch (self) {
-                .word, .ascii,. asciz, .space, .byte => true,
+                .word, .ascii, .asciz, .space, .byte => true,
                 .sect, .text, .data, .bss => false,
-            };
-        }
-    
-        pub fn isSectionType(self: @This()) bool {
-            return switch (self) {
-                .text, .data, .bss => true,
-                else => false,
             };
         }
     };
@@ -192,25 +223,25 @@ pub const asm_syntax = struct {
 // That's a comptime generated array, which is a bit crazy.
 pub const isa = std.EnumArray(InstructionMnemonic, InstructionDescription).init(.{
     .mov = .{ .allowed_operands = &.{ memOrReg(), memOrRegOrImm() } },
-    .loop = .{ .allowed_operands = &.{ memOrRegOrImm() } },
-    
+    .loop = .{ .allowed_operands = &.{memOrRegOrImm()} },
+
     .add = .{ .allowed_operands = &.{ memOrReg(), memOrRegOrImm() } },
-    .inc = .{ .allowed_operands = &.{ memOrReg() } },
+    .inc = .{ .allowed_operands = &.{memOrReg()} },
     .sub = .{ .allowed_operands = &.{ memOrReg(), memOrRegOrImm() } },
-    .dec = .{ .allowed_operands = &.{ memOrReg() } },
-    .neg = .{ .allowed_operands = &.{ memOrReg() } },
+    .dec = .{ .allowed_operands = &.{memOrReg()} },
+    .neg = .{ .allowed_operands = &.{memOrReg()} },
     .cmp = .{ .allowed_operands = &.{ memOrRegOrImm(), memOrRegOrImm() } },
-    .mul = .{ .allowed_operands = &.{ memOrRegOrImm() } },
-    .imul = .{ .allowed_operands = &.{ memOrRegOrImm() } },
-    .div = .{ .allowed_operands = &.{ memOrRegOrImm() } },
-    .idiv = .{ .allowed_operands = &.{ memOrRegOrImm() } },
-    
-    .cwd = .{ },
-    
-    .push = .{ .allowed_operands = &.{ memOrRegOrImm() } },
-    .pop = .{ .allowed_operands = &.{ memOrReg() } },
-    .nop = .{ },
-    .sys = .{ },
+    .mul = .{ .allowed_operands = &.{memOrRegOrImm()} },
+    .imul = .{ .allowed_operands = &.{memOrRegOrImm()} },
+    .div = .{ .allowed_operands = &.{memOrRegOrImm()} },
+    .idiv = .{ .allowed_operands = &.{memOrRegOrImm()} },
+
+    .cwd = .{},
+
+    .push = .{ .allowed_operands = &.{memOrRegOrImm()} },
+    .pop = .{ .allowed_operands = &.{memOrReg()} },
+    .nop = .{},
+    .sys = .{},
 });
 
 fn memOrImm() AllowedOperands {
