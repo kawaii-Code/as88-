@@ -56,15 +56,6 @@ pub fn assemble(source: ProgramSourceCode, arena: *std.heap.ArenaAllocator) !Ass
     file.errors = Errors.init(&file);
 
     try Tokenizer.tokenize(&file);
-
-    for (0..file.tokens.len) |i| {
-        const token_and_loc = file.tokens.get(i);
-        const token = token_and_loc.token;
-        const location = token_and_loc.location;
-        print("({}:{}): {}\n", .{ location.line, location.column, token });
-    }
-    print("---------------------------\n", .{});
-
     if (file.errors.list.items.len != 0) {
         return .{ .errors = file.errors.list };
     }

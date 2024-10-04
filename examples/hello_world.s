@@ -12,10 +12,9 @@ start:
 	PUSH	_STDOUT
 	PUSH	_WRITE
 	SYS
-
 	ADD	SP, 8
-	SUB	CX, AX
-	PUSH	CX
+
+	PUSH	0
 	PUSH	_EXIT
 	SYS
 
