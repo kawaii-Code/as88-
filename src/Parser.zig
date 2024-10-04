@@ -51,6 +51,7 @@ pub const ConstantDefinitionAstNode = struct {
 pub const ExpressionAstNode = union(enum) {
     binary: BinaryExpressionAstNode,
     unary: UnaryExpressionAstNode,
+    address: AddressModeAstNode,
     value: ValueAstNode,
 };
 
@@ -71,6 +72,10 @@ pub const ValueAstNode = union(enum) {
     register: intel8088.Register,
     word: i16, // There are more variants, like unsigned word,
     // byte and unsigned byte
+};
+
+pub const AddressModeAstNode = union(enum) {
+    basic: *ExpressionAstNode,
 };
 
 pub const InstructionAstNode = struct {
@@ -323,6 +328,20 @@ fn parseAtom(self: *Self) !?*ExpressionAstNode {
         .register => |register| .{ .value = .{ .register = register } },
         .number => |number| .{ .value = .{ .word = number } },
         .string => |string| .{ .value = .{ .string = string } },
+        .left_paren => blk: {
+            const expression = (try self.parseAtom()) orelse return null;
+            const right_paren = self.next();
+            if (right_paren != null and right_paren.? == .right_paren) {
+                break :blk .{
+                    .address = .{
+                        .basic = expression,
+                    },
+                };
+            }
+            const location = self.peekLocation();
+            self.file.errors.append(location, "expected a ')'", .{});
+            return null;
+        },
         else => {
             const location = self.peekLocationN(-1);
             self.file.errors.append(location, "'{}' can't be used in this context", .{current});

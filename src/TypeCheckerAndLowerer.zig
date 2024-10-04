@@ -11,9 +11,16 @@ const Self = @This();
 
 pub const AssembledProgram = struct {
     instructions: std.ArrayList(Instruction),
+    data_fields: std.ArrayList(DataField),
     memory: std.ArrayList([]const u8),
     labels: std.StringHashMap(Label),
     constants: std.StringHashMap(i16),
+};
+
+pub const DataField = struct {
+    start_address: u16,
+    size: u16,
+    initializer: ?[]const u8,
 };
 
 pub const Instruction = struct {
@@ -33,10 +40,10 @@ pub const Label = union(enum) {
 
 file: *as88.File,
 instructions: std.ArrayList(Instruction),
+data_fields: std.ArrayList(DataField),
 memory: std.ArrayList([]const u8),
 constants: std.StringHashMap(i16),
 labels: std.StringHashMap(Label),
-ast: std.ArrayList(Parser.AstNode),
 location: SourceLocation,
 
 pub fn typeCheckAndFinalize(file: *as88.File) !AssembledProgram {
@@ -46,94 +53,88 @@ pub fn typeCheckAndFinalize(file: *as88.File) !AssembledProgram {
         .file = file,
         .labels = std.StringHashMap(Label).init(allocator),
         .constants = std.StringHashMap(i16).init(allocator),
+        .data_fields = std.ArrayList(DataField).init(allocator),
         .memory = std.ArrayList([]const u8).init(allocator),
         .instructions = std.ArrayList(Instruction).init(allocator),
-        .ast = undefined,
         .location = undefined,
     };
 
-    // This is a temporary hack
-    var ast = std.ArrayList(Parser.AstNode).init(allocator);
-    for (unchecked_ast.text_section.items(.node)) |node| {
-        try ast.append(node);
-    }
-    for (unchecked_ast.data_section.items(.node)) |node| {
-        try ast.append(node);
-    }
-    for (unchecked_ast.bss_section.items(.node)) |node| {
-        try ast.append(node);
-    }
-    for (unchecked_ast.outside_any_section.items(.node)) |node| {
-        try ast.append(node);
-    }
-    var locations = std.ArrayList(SourceLocation).init(allocator);
-    for (unchecked_ast.text_section.items(.location)) |location| {
-        try locations.append(location);
-    }
-    for (unchecked_ast.data_section.items(.location)) |location| {
-        try locations.append(location);
-    }
-    for (unchecked_ast.bss_section.items(.location)) |location| {
-        try locations.append(location);
-    }
-    for (unchecked_ast.outside_any_section.items(.location)) |location| {
-        try locations.append(location);
-    }
+    // TODO:
+    // Label pass, solely for error reporting
+    //{
+    //    var last_label_name: ?[]const u8 = null;
+    //    for (ast.items, 0..) |node, i| {
+    //        self.location = locations.items[i];
+    //        switch (node) {
+    //            .instruction => |_| {},
+    //            .data_field => {},
+    //            .label => |_| {
+    //                // TODO: Actually, two or more labels could point
+    //                // at the same data, which is a little annoying.
+    //                if (last_label_name != null) {
+    //                    self.file.errors.append(locations.items[i - 1], "label pointing to another label is forbidden", .{});
+    //                }
+    //            },
+    //            .constant => |_| {
+    //                if (last_label_name != null) {
+    //                    self.file.errors.append(locations.items[i - 1], "label pointing to a constant is forbidden", .{});
+    //                }
+    //            },
+    //        }
+    //
+    //        if (node == .label) {
+    //            last_label_name = node.label.name;
+    //        } else {
+    //            last_label_name = null;
+    //        }
+    //    }
+    //}
 
-    self.ast = ast;
-    self.location = locations.items[0];
-
-    // Label pass
+    // Data fields pass
     {
-        var instruction_address: u16 = 0;
-        var memory_address: u16 = 0;
+        // TODO: A label pointing to a label would ruin me here.
         var last_label_name: ?[]const u8 = null;
-        for (ast.items, 0..) |node, i| {
-            self.location = locations.items[i];
-            switch (node) {
-                .instruction => |_| {
-                    if (last_label_name) |label_name| {
-                        const result = try self.labels.getOrPut(label_name);
-                        if (result.found_existing) {
-                            self.file.errors.append(self.location, "duplicate label {s}", .{label_name});
-                        } else {
-                            result.value_ptr.* = .{ .instruction = instruction_address };
-                        }
-                    }
-                    instruction_address += 1;
-                },
-                .label => |_| {
-                    // TODO: Actually, two or more labels could point
-                    // at the same data, which is a little annoying.
-                    if (last_label_name != null) {
-                        self.file.errors.append(locations.items[i - 1], "label pointing to another label is forbidden", .{});
-                    }
-                },
-                .data_field => |data_field| {
-                    if (last_label_name) |label_name| {
-                        const result = try self.labels.getOrPut(label_name);
-                        if (result.found_existing) {
-                            self.file.errors.append(self.location, "duplicate label {s}", .{label_name});
-                        } else {
-                            result.value_ptr.* = .{ .memory_field = memory_address };
-                        }
-                    }
-
-                    const maybe_value = self.evaluateExpression(data_field.initializer);
-                    if (maybe_value) |value| {
-                        const size = self.sizeOf(data_field, value);
-                        memory_address += @as(u16, @intCast(size));
-                    }
-                },
-                .constant => |_| {
-                    if (last_label_name != null) {
-                        self.file.errors.append(locations.items[i - 1], "label pointing to a constant is forbidden", .{});
-                    }
-                },
-            }
-
+        var memory_address: u16 = 0;
+        for (0..unchecked_ast.data_section.len) |i| {
+            const item = unchecked_ast.data_section.get(i);
+            self.location = item.location;
+            // Maybe there is a more ergonomic way to do this?
+            const node = item.node;
             if (node == .label) {
                 last_label_name = node.label.name;
+                continue;
+            }
+            const maybe_data_field = try self.typeCheckAndEvaluateDataField(node, item.location, memory_address);
+            if (maybe_data_field) |data_field| {
+                if (last_label_name) |label| {
+                    try self.addLabel(label, .{ .memory_field = memory_address });
+                }
+
+                try self.data_fields.append(data_field);
+                memory_address += data_field.size;
+            } else {
+                last_label_name = null;
+            }
+        }
+
+        // Copypasta from above
+        last_label_name = null;
+        for (0..unchecked_ast.bss_section.len) |i| {
+            const item = unchecked_ast.bss_section.get(i);
+            self.location = item.location;
+            const node = item.node;
+            if (node == .label) {
+                last_label_name = node.label.name;
+                continue;
+            }
+            const maybe_data_field = try self.typeCheckAndEvaluateDataField(node, item.location, memory_address);
+            if (maybe_data_field) |data_field| {
+                if (last_label_name) |label| {
+                    try self.addLabel(label, .{ .memory_field = memory_address });
+                }
+
+                try self.data_fields.append(data_field);
+                memory_address += data_field.size;
             } else {
                 last_label_name = null;
             }
@@ -142,70 +143,49 @@ pub fn typeCheckAndFinalize(file: *as88.File) !AssembledProgram {
 
     // Constants pass
     {
-        for (ast.items, 0..) |node, i| {
-            self.location = locations.items[i];
+        for (0..unchecked_ast.outside_any_section.len) |i| {
+            const item = unchecked_ast.outside_any_section.get(i);
+            const node = item.node;
+            self.location = item.location;
             switch (node) {
-                .instruction => |_| {},
-                .label => |_| {},
-                .data_field => |data_field| {
-                    const maybe_value = self.evaluateExpression(data_field.initializer);
-                    if (maybe_value) |value| {
-                        const size = self.sizeOf(data_field, value);
-                        const maybe_bytes = switch (value) {
-                            .register => blk: {
-                                self.file.errors.append(self.location, "a register cannot be used in a data field", .{});
-                                break :blk null;
-                            },
-                            .string => |string| string,
-                            // memory_address Could be an error?
-                            .memory_address => |address| try allocator.dupe(u8, std.mem.asBytes(&address)),
-                            .immediate => |immediate| blk: {
-                                std.debug.assert(size <= 2);
-                                if (size == 1 and (immediate < -128 or immediate > 255)) {
-                                    self.file.errors.addError(self.location, "number {} out of range for .BYTE", .{immediate});
-                                    self.file.errors.addNote(".BYTE accepts numbers in range [-128, 255]", .{});
-                                    self.file.errors.commit();
-                                    break :blk null;
-                                }
-                                break :blk try allocator.dupe(u8, std.mem.asBytes(&immediate));
-                            },
-                        };
-
-                        if (maybe_bytes) |bytes| {
-                            try self.memory.append(bytes);
-                        }
-                    }
-                },
                 .constant => |constant| {
-                    const value = self.evaluateExpression(constant.initializer) orelse break;
-                    const bucket = try self.constants.getOrPut(constant.name);
-                    if (bucket.found_existing) {
-                        self.file.errors.append(self.location, "constant {s} is already defined", .{constant.name});
-                    } else {
-                        switch (value) {
-                            .register => |register| {
-                                self.file.errors.append(self.location, "can't assign register {} to a constant", .{register});
-                            },
-                            .string => |string| {
-                                self.file.errors.append(self.location, "can't assign string \"{s}\" to a constant", .{string});
-                            },
-                            .immediate => |immediate| {
-                                bucket.value_ptr.* = immediate;
-                            },
-                            .memory_address => |address| {
-                                bucket.value_ptr.* = @as(i16, @bitCast(address));
-                            },
-                        }
-                    }
+                    try self.typeCheckAndEvaluateConstant(constant);
                 },
+                else => {
+                    self.file.errors.append(self.location, "{} does not belong in this section", .{node});
+                }
+            }
+        }
+    }
+
+    // Instruction labels pass
+    {
+        var instruction_address: u16 = 0;
+        var last_label_name: ?[]const u8 = null;
+        for (0..unchecked_ast.text_section.len) |i| {
+            const item = unchecked_ast.text_section.get(i);
+            self.location = item.location;
+            const node = item.node;
+            if (node == .instruction) {
+                if (last_label_name) |name| {
+                    try self.addLabel(name, .{ .instruction = instruction_address });
+                }
+                instruction_address += 1;
+            }
+            if (node == .label) {
+                last_label_name = node.label.name;
+            } else {
+                last_label_name = null;
             }
         }
     }
 
     // Instruction pass
     {
-        for (ast.items, 0..) |node, i| {
-            self.location = locations.items[i];
+        for (0..unchecked_ast.text_section.len) |i| {
+            const item = unchecked_ast.text_section.get(i);
+            self.location = item.location;
+            const node = item.node;
             switch (node) {
                 .instruction => |instruction| {
                     const maybe_type_checked_instruction = try self.typeCheckInstruction(instruction);
@@ -213,17 +193,117 @@ pub fn typeCheckAndFinalize(file: *as88.File) !AssembledProgram {
                         try self.instructions.append(type_checked_instruction);
                     }
                 },
-                else => {},
+                .label => {},
+                else => {
+                    self.file.errors.append(self.location, "{} does not belong in the text section", .{node});
+                },
             }
         }
     }
 
     return AssembledProgram{
         .instructions = self.instructions,
+        .data_fields = self.data_fields,
         .memory = self.memory,
         .constants = self.constants,
         .labels = self.labels,
     };
+}
+
+fn typeCheckAndEvaluateDataField(self: *Self, node: Parser.AstNode, location: SourceLocation, start_address: u16) !?DataField {
+    switch (node) {
+        .data_field => |data_field| {
+            const maybe_value = self.evaluateExpression(data_field.initializer);
+            if (maybe_value) |value| {
+                if (data_field.data_type == .space) {
+                    if (value != .immediate) {
+                        self.file.errors.append(self.location, ".SPACE expected a number after it, got {}", .{value});
+                        return null;
+                    }
+                    const immediate = value.immediate;
+                    if (immediate < 0) {
+                        self.file.errors.append(self.location, "size of .SPACE can't be less than zero", .{});
+                        return null;
+                    }
+                    const size = @as(u16, @bitCast(value.immediate));
+                    return DataField{
+                        .start_address = start_address,
+                        .size = size,
+                        .initializer = null,
+                    };
+                }
+
+                const size = self.sizeOf(data_field, value);
+                const maybe_bytes: ?[]const u8 = switch (value) {
+                    .register => blk: {
+                        self.file.errors.append(self.location, "a register cannot be used in a data field", .{});
+                        break :blk null;
+                    },
+                    .memory_address => blk: {
+                        self.file.errors.append(self.location, "a memory access is not allowed in a data field", .{});
+                        break :blk null;
+                    },
+                    .string => |string| string,
+                    .immediate => |immediate| blk: {
+                        std.debug.assert(size <= 2);
+                        if (size == 1 and (immediate < -128 or immediate > 255)) {
+                            self.file.errors.addError(self.location, "number {} out of range for .BYTE", .{immediate});
+                            self.file.errors.addNote(".BYTE accepts numbers in range [-128, 255]", .{});
+                            self.file.errors.commit();
+                            break :blk null;
+                        }
+                        break :blk std.mem.asBytes(&immediate);
+                    },
+                };
+                
+                if (maybe_bytes) |bytes| {
+                    const initializer = blk: {
+                        if (data_field.data_type == .asciz) {
+                            var cstring = try self.file.allocator.alloc(u8, bytes.len + 1);
+                            @memcpy(cstring[0..bytes.len], bytes);
+                            cstring[bytes.len] = 0;
+                            break :blk cstring;
+                        }
+                        break :blk try self.file.allocator.dupe(u8, bytes);
+                    };
+                    return DataField{
+                        .start_address = start_address,
+                        .size = @as(u16, @intCast(bytes.len)), // TODO: Could overflow
+                        .initializer = initializer,
+                    };
+                }
+            }
+            return null;
+        },
+        .label => return null,
+        else => {
+            self.file.errors.append(location, "{} is not allowed in the data section", .{node});
+            return null;
+        },
+    }
+}
+
+fn typeCheckAndEvaluateConstant(self: *Self, constant: Parser.ConstantDefinitionAstNode) !void {
+    const value = self.evaluateExpression(constant.initializer) orelse return;
+    const bucket = try self.constants.getOrPut(constant.name);
+    if (bucket.found_existing) {
+        self.file.errors.append(self.location, "constant {s} is already defined", .{constant.name});
+    } else {
+        switch (value) {
+            .register => |register| {
+                self.file.errors.append(self.location, "can't assign register {} to a constant", .{register});
+            },
+            .string => |string| {
+                self.file.errors.append(self.location, "can't assign string \"{s}\" to a constant", .{string});
+            },
+            .immediate => |immediate| {
+                bucket.value_ptr.* = immediate;
+            },
+            .memory_address => |address| {
+                bucket.value_ptr.* = @as(i16, @bitCast(address));
+            },
+        }
+    }
 }
 
 fn sizeOf(self: *Self, data_field: Parser.DataFieldAstNode, value: EvaluatedExpression) usize {
@@ -244,23 +324,14 @@ fn sizeOf(self: *Self, data_field: Parser.DataFieldAstNode, value: EvaluatedExpr
             }
             return value.string.len + 1;
         },
-        .space => {
-            if (value != .immediate) {
-                self.file.errors.append(self.location, ".SPACE expected a number after it, got {}", .{value});
-                return 0;
-            }
-            const immediate = value.immediate;
-            if (immediate < 0) {
-                self.file.errors.append(self.location, "size of .SPACE can't be less than zero", .{});
-                return 0;
-            }
-            return @as(usize, @intCast(value.immediate));
-        },
         else => unreachable,
     };
 }
 
-fn typeCheckInstruction(self: *Self, instruction: Parser.InstructionAstNode) !?Instruction {
+fn typeCheckInstruction(
+    self: *Self,
+    instruction: Parser.InstructionAstNode
+) !?Instruction {
     const description = intel8088.isa.get(instruction.mnemonic);
     if (description.allowed_operands.len != instruction.operands.len) {
         self.file.errors.append(self.location, "instruction {} takes {} arguments, but got {}", .{
@@ -336,48 +407,26 @@ fn evaluateExpression(
             const left_any_type = self.evaluateExpression(binary.left) orelse return null;
             const right_any_type = self.evaluateExpression(binary.right) orelse return null;
 
-            if (left_any_type == .immediate and right_any_type == .immediate) {
-                const left = left_any_type.immediate;
-                const right = right_any_type.immediate;
-                switch (binary.operator) {
-                    .plus => return .{ .immediate = left + right },
-                    .minus => return .{ .immediate = left - right },
-                    .multiply => return .{ .immediate = left * right },
-                    .divide => return .{ .immediate = @divFloor(left, right) },
-                }
-            } else if (left_any_type == .memory_address and right_any_type == .memory_address) {
-                const left = left_any_type.memory_address;
-                const right = right_any_type.memory_address;
-                switch (binary.operator) {
-                    .plus => return .{ .memory_address = left + right },
-                    .minus => return .{ .memory_address = left - right },
-                    .multiply => return .{ .memory_address = left * right },
-                    .divide => return .{ .memory_address = @divFloor(left, right) },
-                }
-            } else if (left_any_type == .immediate and right_any_type == .memory_address) {
-                const left = left_any_type.immediate;
-                const right = right_any_type.memory_address;
-                switch (binary.operator) {
-                    .plus => return .{ .memory_address = @as(u16, @intCast(left)) + right },
-                    .minus => return .{ .memory_address = @as(u16, @intCast(left)) - right },
-                    .multiply => return .{ .memory_address = @as(u16, @intCast(left)) * right },
-                    .divide => return .{ .memory_address = @divFloor(@as(u16, @intCast(left)), right) },
-                }
-            } else if (left_any_type == .memory_address and right_any_type == .immediate) {
-                // COPYPASTA SUPER WARNING
-                // BE CAREFUL WITH THAT CODE
-                const left = right_any_type.immediate;
-                const right = left_any_type.memory_address;
-                switch (binary.operator) {
-                    .plus => return .{ .memory_address = @as(u16, @intCast(left)) + right },
-                    .minus => return .{ .memory_address = @as(u16, @intCast(left)) - right },
-                    .multiply => return .{ .memory_address = @as(u16, @intCast(left)) * right },
-                    .divide => return .{ .memory_address = @divFloor(@as(u16, @intCast(left)), right) },
-                }
-            } else {
-                // TODO: There are more expressions here
-                std.debug.assert(false);
-                return null;
+            const left = switch (left_any_type) {
+                .immediate => |value| value,
+                else => {
+                    self.file.errors.append(self.location, "invalid operand in expression: {}", .{left_any_type});
+                    return null;
+                },
+            };
+            const right = switch (right_any_type) {
+                .immediate => |value| value,
+                else => {
+                    self.file.errors.append(self.location, "invalid operand in expression: {}", .{left_any_type});
+                    return null;
+                },
+            };
+
+            switch (binary.operator) {
+                .plus => return .{ .immediate = left + right },
+                .minus => return .{ .immediate = left - right },
+                .multiply => return .{ .immediate = left * right },
+                .divide => return .{ .immediate = @divFloor(left, right) },
             }
         },
         .unary => |unary| {
@@ -393,6 +442,30 @@ fn evaluateExpression(
                 return null;
             }
         },
+        .address => |address| {
+            switch (address) {
+                .basic => |basic| {
+                    const operand_any_type = self.evaluateExpression(basic) orelse return null;
+                    switch (operand_any_type) {
+                        .register => {
+                            // TODO: intel8088 is crazy, some registers can access memory, some not, and it makes 0 sense.
+                            unreachable;
+                        },
+                        .immediate => |value| {
+                            return .{ .memory_address = @as(u16, @bitCast(value)) };
+                        },
+                        .memory_address => {
+                            self.file.errors.append(self.location, "can't dereference something that is already dereferenced. Long story short, the code is wrong.", .{});
+                            return null;
+                        },
+                        .string => {
+                            self.file.errors.append(self.location, "string was not expected here", .{});
+                            return null;
+                        },
+                    }
+                }
+            }
+        },
         .value => |value| {
             switch (value) {
                 .string => |string| return .{ .string = string },
@@ -400,7 +473,12 @@ fn evaluateExpression(
                     if (self.constants.get(identifier)) |constant_value| {
                         return .{ .immediate = constant_value };
                     } else if (self.labels.get(identifier)) |label| {
-                        return .{ .memory_address = label.memory_field };
+                        // what label is, doesn't matter. It's just a number.
+                        const immediate = switch (label) {
+                            .instruction => |address| @as(i16, @bitCast(address)),
+                            .memory_field => |address| @as(i16, @bitCast(address)),
+                        };
+                        return .{ .immediate = immediate };
                     } else {
                         self.file.errors.append(self.location, "undeclared identifier '{s}'\n", .{identifier});
                         return null;
@@ -414,5 +492,14 @@ fn evaluateExpression(
                 },
             }
         },
+    }
+}
+
+fn addLabel(self: *Self, name: []const u8, value: Label) !void {
+    const result = try self.labels.getOrPut(name);
+    if (result.found_existing) {
+        self.file.errors.append(self.location, "duplicate label {s}", .{name});
+    } else {
+        result.value_ptr.* = value;
     }
 }

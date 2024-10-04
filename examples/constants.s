@@ -5,7 +5,6 @@ HELLO_WORLD_LENGTH = hello_world_end - hello_world
 .SECT .TEXT
 	MOV AX, THE_NUMBER_3
 	MOV BX, HELLO_WORLD_LENGTH
-	! MOV CX, BAD_VAR ! This instruction will be silently removed because of the error
 
 .SECT .DATA
 hello_world:		.ASCII	"Hello, World!\n"

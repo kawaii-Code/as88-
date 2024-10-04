@@ -37,10 +37,14 @@ pub fn init(allocator: std.mem.Allocator, assembled_code: TypeCheckerAndLowerer.
     // TODO: This should be 1 megabyte
     const memory = try allocator.alloc(u8, 32);
     var memory_index: u32 = 0;
-    for (assembled_code.memory.items) |memory_field| {
+    for (assembled_code.data_fields.items) |data_field| {
         // This will get more complicated
-        std.mem.copyForwards(u8, memory[memory_index..], memory_field);
-        memory_index += @as(u32, @intCast(memory_field.len));
+        if (data_field.initializer) |bytes| {
+            std.mem.copyForwards(u8, memory[memory_index..], bytes);
+        } else {
+            @memset(memory[memory_index..memory_index + data_field.size], 0);
+        }
+        memory_index += data_field.size;
     }
 
     var registers = std.EnumArray(intel8088.Register, i16).initFill(0);
